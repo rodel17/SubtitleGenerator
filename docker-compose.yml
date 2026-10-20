@@ -12,6 +12,40 @@ services:
       - app-network
     depends_on:
       - postgres
+      - redis
+
+  # Horizon: runs and supervises the Redis queue workers (dashboard at http://localhost:8000/horizon)
+  # Workers keep code in memory — after changing job code run: docker compose restart horizon
+  horizon:
+    build:
+      context: .
+      dockerfile: Docker/php/Dockerfile
+    container_name: laravel_horizon
+    command: php artisan horizon
+    restart: unless-stopped
+    volumes:
+      - ./backend:/var/www/html
+    networks:
+      - app-network
+    depends_on:
+      - postgres
+      - redis
+
+  # Laravel scheduler (routes/console.php): horizon:snapshot for dashboard metrics, model:prune
+  scheduler:
+    build:
+      context: .
+      dockerfile: Docker/php/Dockerfile
+    container_name: laravel_scheduler
+    command: php artisan schedule:work
+    restart: unless-stopped
+    volumes:
+      - ./backend:/var/www/html
+    networks:
+      - app-network
+    depends_on:
+      - postgres
+      - redis
 
   # Nginx serving Laravel (reverse proxy to PHP-FPM)
   nginx:
@@ -59,9 +93,23 @@ services:
     networks:
       - app-network
 
+  # Redis: queues (via Horizon) and cache
+  redis:
+    image: redis:7-alpine
+    container_name: laravel_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+
 networks:
   app-network:
     driver: bridge
 
 volumes:
   postgres_data:
+  redis_data:
