@@ -46,8 +46,11 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-/** 4xx responses (except timeouts / rate limits) won't succeed on retry */
-function isRetryable(error: unknown): boolean {
+/**
+ * 4xx responses (except timeouts / rate limits) won't succeed on retry; network
+ * errors and 5xx might, so an upload that stopped on one of these can be resumed.
+ */
+export function isRetryable(error: unknown): boolean {
   if (isCancel(error)) return false
   if (!isAxiosError(error) || !error.response) return true
 
@@ -58,29 +61,66 @@ function isRetryable(error: unknown): boolean {
 /**
  * Upload a file in chunks: start the upload, send chunks a few at a time
  * (each retried with backoff), then ask the API to assemble them.
+ *
+ * Resolves with the upload as the API accepted it for assembly (status
+ * "assembling"); assembly and transcription continue on the server.
  */
 export async function uploadInChunks(
   file: File,
   options: ChunkedUploadOptions,
 ): Promise<UploadResource> {
-  const { signal, onProgress } = options
-
   const { data: started } = await api.post<{ data: UploadResource }>(
     '/uploads',
     {
       name: file.name,
       size: file.size,
       mime_type: file.type || null,
+      last_modified: file.lastModified,
       language: options.language,
       subtitle_format: options.format,
     },
-    { signal },
+    { signal: options.signal },
   )
-  const upload = started.data
-  options.onStarted?.(upload)
+  options.onStarted?.(started.data)
 
-  const ranges = chunkRanges(file.size, upload.chunk_size)
-  const sentBytes = Array.from({ length: ranges.length }, () => 0)
+  return sendChunksAndComplete(file, started.data.id, started.data.chunk_size, new Set(), options)
+}
+
+/**
+ * Continue an interrupted upload of the same file: ask the API which chunks it
+ * already has and send only the rest.
+ */
+export async function resumeInChunks(
+  file: File,
+  uploadId: string,
+  options: Pick<ChunkedUploadOptions, 'signal' | 'onProgress' | 'onAssembling'>,
+): Promise<UploadResource> {
+  const { data } = await api.get<{
+    data: { chunk_size: number; total_chunks: number; received: number[] }
+  }>(`/uploads/${uploadId}/chunks`, { signal: options.signal })
+
+  return sendChunksAndComplete(
+    file,
+    uploadId,
+    data.data.chunk_size,
+    new Set(data.data.received),
+    options,
+  )
+}
+
+async function sendChunksAndComplete(
+  file: File,
+  uploadId: string,
+  chunkSize: number,
+  received: Set<number>,
+  options: Pick<ChunkedUploadOptions, 'signal' | 'onProgress' | 'onAssembling'>,
+): Promise<UploadResource> {
+  const { signal, onProgress } = options
+
+  const ranges = chunkRanges(file.size, chunkSize)
+  // Chunks the server already has count as sent, so progress resumes where it stopped
+  const sentBytes = ranges.map((range) => (received.has(range.index) ? range.end - range.start : 0))
+  const pending = ranges.filter((range) => !received.has(range.index))
   const reportProgress = () => {
     const total = sentBytes.reduce((sum, bytes) => sum + bytes, 0)
     onProgress?.(Math.min(99, Math.floor((total / file.size) * 100)))
@@ -93,7 +133,7 @@ export async function uploadInChunks(
       body.append('chunk', file.slice(start, end), `${index}`)
 
       try {
-        await api.post(`/uploads/${upload.id}/chunks`, body, {
+        await api.post(`/uploads/${uploadId}/chunks`, body, {
           signal,
           onUploadProgress: (event) => {
             sentBytes[index] = Math.min(event.loaded, end - start)
@@ -111,18 +151,20 @@ export async function uploadInChunks(
     }
   }
 
+  if (received.size) reportProgress()
+
   // A small worker pool: each worker takes the next chunk until none are left
   let next = 0
   const worker = async () => {
-    while (next < ranges.length) {
-      await sendChunk(ranges[next++]!)
+    while (next < pending.length) {
+      await sendChunk(pending[next++]!)
     }
   }
-  await Promise.all(Array.from({ length: Math.min(PARALLEL_CHUNKS, ranges.length) }, worker))
+  await Promise.all(Array.from({ length: Math.min(PARALLEL_CHUNKS, pending.length) }, worker))
 
   options.onAssembling?.()
   const { data: completed } = await api.post<{ data: UploadResource }>(
-    `/uploads/${upload.id}/completion`,
+    `/uploads/${uploadId}/completion`,
     null,
     { signal },
   )

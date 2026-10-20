@@ -60,4 +60,14 @@ class UploadFactory extends Factory
             'completed_at' => now(),
         ]);
     }
+
+    /**
+     * An upload that has been transcribed; its subtitle files are ready to download.
+     */
+    public function ready(): static
+    {
+        return $this->uploaded()->state(fn (): array => [
+            'status' => UploadStatus::Ready,
+        ]);
+    }
 }

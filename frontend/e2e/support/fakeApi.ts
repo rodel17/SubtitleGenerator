@@ -5,32 +5,50 @@ export interface FakeUpload {
   name: string
   extension: string
   mime_type: string | null
+  last_modified: number | null
   size: number
   chunk_size: number
   total_chunks: number
   language: string | null
   subtitle_format: 'srt' | 'vtt' | 'both'
-  status: 'uploading' | 'uploaded'
+  status: 'uploading' | 'assembling' | 'uploaded' | 'transcribing' | 'ready' | 'failed'
+  progress: number | null
+  error: string | null
+  subtitles?: Partial<Record<'srt' | 'vtt', string>>
   created_at: string
   completed_at: string | null
 }
 
+function subtitleLinks(id: string, format: FakeUpload['subtitle_format']) {
+  const formats = format === 'both' ? (['srt', 'vtt'] as const) : [format]
+  return Object.fromEntries(formats.map((f) => [f, `http://localhost:8000/api/uploads/${id}/subtitles/${f}`]))
+}
+
 export function fakeUpload(overrides: Partial<FakeUpload> = {}): FakeUpload {
-  return {
+  const upload: FakeUpload = {
     id: 'upload-existing',
     name: 'product-demo.mov',
     extension: 'mov',
     mime_type: 'video/quicktime',
+    last_modified: null,
     size: 1.2 * 1024 * 1024,
     chunk_size: 5 * 1024 * 1024,
     total_chunks: 1,
     language: 'en',
     subtitle_format: 'srt',
-    status: 'uploaded',
+    status: 'ready',
+    progress: null,
+    error: null,
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
     ...overrides,
   }
+
+  if (upload.status === 'ready' && !upload.subtitles) {
+    upload.subtitles = subtitleLinks(upload.id, upload.subtitle_format)
+  }
+
+  return upload
 }
 
 type Handler = (route: Route, request: Request) => Promise<void> | void
@@ -43,6 +61,8 @@ export class FakeApi {
   uploads: FakeUpload[] = []
   startRequests: Record<string, unknown>[] = []
   chunkIndexes: number[] = []
+  /** Chunk indexes stored per upload id, as GET /uploads/{id}/chunks reports them */
+  receivedChunks: Record<string, number[]> = {}
   completions: string[] = []
   deletions: string[] = []
 
@@ -69,7 +89,13 @@ export class FakeApi {
     }
 
     if (method === 'POST' && path === '/uploads') {
-      const body = request.postDataJSON() as { name: string; size: number; language: string; subtitle_format: FakeUpload['subtitle_format'] }
+      const body = request.postDataJSON() as {
+        name: string
+        size: number
+        last_modified: number | null
+        language: string
+        subtitle_format: FakeUpload['subtitle_format']
+      }
       this.startRequests.push(body)
       if (this.onStart) return this.onStart(route, request)
 
@@ -78,6 +104,7 @@ export class FakeApi {
         name: body.name,
         extension: body.name.split('.').pop()!.toLowerCase(),
         mime_type: null,
+        last_modified: body.last_modified,
         size: body.size,
         chunk_size: this.chunkSize,
         total_chunks: Math.ceil(body.size / this.chunkSize),
@@ -91,9 +118,22 @@ export class FakeApi {
     }
 
     const chunk = path.match(/^\/uploads\/([^/]+)\/chunks$/)
+    if (method === 'GET' && chunk) {
+      const upload = this.uploads.find((candidate) => candidate.id === chunk[1])!
+      return this.json(route, 200, {
+        data: {
+          chunk_size: upload.chunk_size,
+          total_chunks: upload.total_chunks,
+          received: (this.receivedChunks[upload.id] ?? []).toSorted((a, b) => a - b),
+        },
+      })
+    }
+
     if (method === 'POST' && chunk) {
       if (this.onChunk) return this.onChunk(route, request)
-      this.chunkIndexes.push(chunkIndexOf(request))
+      const index = chunkIndexOf(request)
+      this.chunkIndexes.push(index)
+      this.receivedChunks[chunk[1]!] = [...new Set([...(this.receivedChunks[chunk[1]!] ?? []), index])]
       return route.fulfill({ status: 204 })
     }
 
@@ -102,11 +142,18 @@ export class FakeApi {
       this.completions.push(completion[1]!)
       if (this.onComplete) return this.onComplete(route, request)
       const upload = this.uploads.find((candidate) => candidate.id === completion[1])!
-      Object.assign(upload, { status: 'uploaded', completed_at: '2026-10-20T12:05:00.000000Z' })
-      return this.json(route, 200, { data: upload })
+      Object.assign(upload, { status: 'assembling', progress: 0 })
+      return this.json(route, 202, { data: upload })
     }
 
     const single = path.match(/^\/uploads\/([^/]+)$/)
+    if (method === 'GET' && single) {
+      const upload = this.uploads.find((candidate) => candidate.id === single[1])
+      if (!upload) return route.fulfill({ status: 404 })
+      this.advance(upload)
+      return this.json(route, 200, { data: upload })
+    }
+
     if (method === 'DELETE' && single) {
       this.deletions.push(single[1]!)
       this.uploads = this.uploads.filter((candidate) => candidate.id !== single[1])
@@ -114,6 +161,19 @@ export class FakeApi {
     }
 
     return route.fulfill({ status: 404 })
+  }
+
+  /** Each time the app polls, move processing one step on: assembling → transcribing 50% → ready. */
+  private advance(upload: FakeUpload) {
+    if (upload.status === 'assembling' || upload.status === 'uploaded') {
+      Object.assign(upload, { status: 'transcribing', progress: 50, completed_at: '2026-10-20T12:05:00.000000Z' })
+    } else if (upload.status === 'transcribing') {
+      Object.assign(upload, {
+        status: 'ready',
+        progress: null,
+        subtitles: subtitleLinks(upload.id, upload.subtitle_format),
+      })
+    }
   }
 
   json(route: Route, status: number, body: unknown) {

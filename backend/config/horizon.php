@@ -98,6 +98,9 @@ return [
 
     'waits' => [
         'redis:default' => 60,
+        'redis:uploads' => 60,
+        // Transcriptions run one at a time, so a queue of a few files is normal
+        'redis:transcription' => 1800,
     ],
 
     /*
@@ -210,6 +213,33 @@ return [
             'timeout' => 60,
             'nice' => 0,
         ],
+
+        // Timeouts: job $timeout < supervisor timeout < queue.connections.redis.retry_after (3720)
+
+        // AssembleUpload: disk-bound copying, a few in parallel is fine
+        'supervisor-uploads' => [
+            'connection' => 'redis',
+            'queue' => ['uploads'],
+            'balance' => 'simple',
+            'maxProcesses' => 2,
+            'memory' => 128,
+            'tries' => 1,
+            'timeout' => 960,
+            'nice' => 0,
+        ],
+
+        // ExtractAudio → TranscribeAudio → GenerateSubtitles. Whisper uses every CPU core
+        // for one file, so running several at once only makes each one slower.
+        'supervisor-transcription' => [
+            'connection' => 'redis',
+            'queue' => ['transcription'],
+            'balance' => 'simple',
+            'maxProcesses' => 1,
+            'memory' => 256,
+            'tries' => 1,
+            'timeout' => 3660,
+            'nice' => 0,
+        ],
     ],
 
     'environments' => [
@@ -218,6 +248,9 @@ return [
                 'maxProcesses' => 10,
                 'balanceMaxShift' => 1,
                 'balanceCooldown' => 3,
+            ],
+            'supervisor-uploads' => [
+                'maxProcesses' => 4,
             ],
         ],
 

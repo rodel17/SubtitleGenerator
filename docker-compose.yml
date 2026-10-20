@@ -21,6 +21,8 @@ services:
       context: .
       dockerfile: Docker/php/Dockerfile
     container_name: laravel_horizon
+    # Same user as PHP-FPM, so both can read and delete the files the other creates
+    user: www-data
     command: php artisan horizon
     restart: unless-stopped
     volumes:
@@ -30,6 +32,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - whisper
 
   # Laravel scheduler (routes/console.php): horizon:snapshot for dashboard metrics, model:prune
   scheduler:
@@ -37,6 +40,7 @@ services:
       context: .
       dockerfile: Docker/php/Dockerfile
     container_name: laravel_scheduler
+    user: www-data
     command: php artisan schedule:work
     restart: unless-stopped
     volumes:
@@ -93,6 +97,22 @@ services:
     networks:
       - app-network
 
+  # Speech-to-text (faster-whisper). Called by the TranscribeAudio job at http://whisper:9000.
+  # First start downloads the model into the whisper_models volume.
+  # Bigger ASR_MODEL (small, medium) = more accurate but slower on CPU.
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:v1.10.0
+    container_name: laravel_whisper
+    restart: unless-stopped
+    environment:
+      ASR_ENGINE: faster_whisper
+      ASR_MODEL: base
+      ASR_MODEL_PATH: /data/whisper
+    volumes:
+      - whisper_models:/data/whisper
+    networks:
+      - app-network
+
   # Redis: queues (via Horizon) and cache
   redis:
     image: redis:7-alpine
@@ -113,3 +133,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  whisper_models:
