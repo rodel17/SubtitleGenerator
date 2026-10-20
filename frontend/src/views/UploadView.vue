@@ -1,53 +1,49 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import FileDropzone from '@/components/upload/FileDropzone.vue'
 import FormatToggle from '@/components/upload/FormatToggle.vue'
+import SelectedFilePreview from '@/components/upload/SelectedFilePreview.vue'
 import UploadListItem from '@/components/upload/UploadListItem.vue'
+import { formatBytes } from '@/lib/format'
+import { useUploadsStore } from '@/stores/uploads'
 import {
   ACCEPTED_EXTENSIONS,
   isAcceptedFile,
-  mediaKindOf,
+  LANGUAGES,
+  MAX_FILE_SIZE,
   type SubtitleFormat,
-  type UploadItem,
 } from '@/types/upload'
 
-const languages = ['Auto-detect', 'English', 'Filipino', 'Spanish', 'Japanese']
+const uploads = useUploadsStore()
 
-const selectedFiles = ref<File[]>([])
-const language = ref(languages[0])
+interface SelectedFile {
+  id: string
+  file: File
+}
+
+const selectedFiles = ref<SelectedFile[]>([])
+const language = ref<string>(LANGUAGES[0].value)
 const format = ref<SubtitleFormat>('srt')
 
-// Sample rows showing every state until the upload API is wired up
-const uploads = ref<UploadItem[]>([
-  { id: 'sample-1', name: 'team-interview.mp4', kind: 'video', status: 'uploading', progress: 64 },
-  { id: 'sample-2', name: 'podcast-episode-12.mp3', kind: 'audio', status: 'transcribing' },
-  {
-    id: 'sample-3',
-    name: 'product-demo.mov',
-    kind: 'video',
-    status: 'ready',
-    language: 'English',
-    format: 'srt',
-  },
-])
-
 function addFiles(files: File[]) {
-  const accepted = files.filter(isAcceptedFile)
-  const rejected = files.filter((file) => !isAcceptedFile(file))
+  for (const file of files) {
+    if (!isAcceptedFile(file)) {
+      uploads.addRejected(
+        file,
+        `Unsupported format. Try ${ACCEPTED_EXTENSIONS.slice(0, 3)
+          .map((ext) => ext.toUpperCase())
+          .join(', ')}.`,
+      )
+    } else if (file.size > MAX_FILE_SIZE) {
+      uploads.addRejected(file, `File is larger than the ${formatBytes(MAX_FILE_SIZE)} limit.`)
+    } else {
+      selectedFiles.value.push({ id: crypto.randomUUID(), file })
+    }
+  }
+}
 
-  selectedFiles.value = [...selectedFiles.value, ...accepted]
-
-  uploads.value.unshift(
-    ...rejected.map((file) => ({
-      id: crypto.randomUUID(),
-      name: file.name,
-      kind: mediaKindOf(file.name),
-      status: 'failed' as const,
-      error: `Unsupported format. Try ${ACCEPTED_EXTENSIONS.slice(0, 3)
-        .map((ext) => ext.toUpperCase())
-        .join(', ')}.`,
-    })),
-  )
+function removeSelected(id: string) {
+  selectedFiles.value = selectedFiles.value.filter((selected) => selected.id !== id)
 }
 
 function clearSelection() {
@@ -55,22 +51,25 @@ function clearSelection() {
 }
 
 function generate() {
-  uploads.value.unshift(
-    ...selectedFiles.value.map((file) => ({
-      id: crypto.randomUUID(),
-      name: file.name,
-      kind: mediaKindOf(file.name),
-      status: 'queued' as const,
-      language: language.value,
-      format: format.value,
-    })),
+  uploads.enqueue(
+    selectedFiles.value.map((selected) => selected.file),
+    language.value,
+    format.value,
   )
   selectedFiles.value = []
 }
 
-function removeUpload(id: string) {
-  uploads.value = uploads.value.filter((item) => item.id !== id)
+// Leaving the page would kill in-flight uploads, so ask first
+function warnBeforeLeaving(event: BeforeUnloadEvent) {
+  if (uploads.hasActiveUploads) event.preventDefault()
 }
+
+onMounted(() => {
+  window.addEventListener('beforeunload', warnBeforeLeaving)
+  if (!uploads.items.length) void uploads.fetchRecent()
+})
+
+onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving))
 </script>
 
 <template>
@@ -84,7 +83,21 @@ function removeUpload(id: string) {
     </div>
 
     <section class="flex flex-col gap-6 rounded-2xl border border-slate-200 bg-white p-6">
-      <FileDropzone :selected="selectedFiles" @add="addFiles" />
+      <FileDropzone @add="addFiles" />
+
+      <div v-if="selectedFiles.length" class="flex flex-col gap-3">
+        <h2 class="text-[13px] font-semibold text-slate-700">
+          Selected ({{ selectedFiles.length }})
+        </h2>
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
+          <SelectedFilePreview
+            v-for="selected in selectedFiles"
+            :key="selected.id"
+            :file="selected.file"
+            @remove="removeSelected(selected.id)"
+          />
+        </div>
+      </div>
 
       <div class="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-5">
         <div class="flex flex-col gap-2">
@@ -96,7 +109,9 @@ function removeUpload(id: string) {
             v-model="language"
             class="h-11 rounded-[10px] border border-slate-300 bg-white px-3 text-sm focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none"
           >
-            <option v-for="lang in languages" :key="lang">{{ lang }}</option>
+            <option v-for="lang in LANGUAGES" :key="lang.value" :value="lang.value">
+              {{ lang.label }}
+            </option>
           </select>
         </div>
 
@@ -137,22 +152,25 @@ function removeUpload(id: string) {
       </div>
 
       <ul
-        v-if="uploads.length"
+        v-if="uploads.items.length"
         class="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white"
       >
         <UploadListItem
-          v-for="item in uploads"
+          v-for="item in uploads.items"
           :key="item.id"
           :item="item"
-          @cancel="removeUpload"
-          @remove="removeUpload"
+          @cancel="uploads.remove"
+          @remove="uploads.remove"
         />
       </ul>
       <p
         v-else
-        class="rounded-2xl border border-slate-200 bg-white px-5 py-8 text-center text-sm text-slate-600"
+        class="rounded-2xl border border-slate-200 bg-white px-5 py-8 text-center text-sm"
+        :class="uploads.loadError ? 'text-red-700' : 'text-slate-600'"
       >
-        No uploads yet.
+        {{
+          uploads.isLoading ? 'Loading uploads…' : (uploads.loadError ?? 'No uploads yet.')
+        }}
       </p>
     </section>
   </main>

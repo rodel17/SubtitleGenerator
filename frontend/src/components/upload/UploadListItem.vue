@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { UploadItem } from '@/types/upload'
+import { formatBytes } from '@/lib/format'
+import { languageLabel, type UploadItem } from '@/types/upload'
 
 const props = defineProps<{
   item: UploadItem
@@ -19,9 +20,25 @@ const iconTone = computed(() => {
   return 'bg-accent-soft text-accent'
 })
 
-const readyLabel = computed(() =>
-  [props.item.language, props.item.format?.toUpperCase()].filter(Boolean).join(' · '),
+const detailsLabel = computed(() =>
+  [
+    languageLabel(props.item.language),
+    props.item.format?.toUpperCase(),
+    formatBytes(props.item.size),
+  ]
+    .filter(Boolean)
+    .join(' · '),
 )
+
+const isInProgress = computed(() =>
+  ['uploading', 'processing', 'transcribing'].includes(props.item.status),
+)
+
+const progressLabel = computed(() => {
+  if (props.item.status === 'uploading') return `Uploading · ${props.item.progress ?? 0}%`
+  if (props.item.status === 'processing') return 'Finalizing…'
+  return 'Transcribing…'
+})
 
 const secondaryButton =
   'h-10 cursor-pointer rounded-[10px] border border-slate-300 bg-white px-3.5 text-sm font-semibold text-slate-700 hover:bg-slate-100'
@@ -57,15 +74,10 @@ const secondaryButton =
     </span>
 
     <!-- In-progress rows: name + status on one line, bar underneath -->
-    <div
-      v-if="item.status === 'uploading' || item.status === 'transcribing'"
-      class="flex min-w-0 flex-[1_1_240px] flex-col gap-2"
-    >
+    <div v-if="isInProgress" class="flex min-w-0 flex-[1_1_240px] flex-col gap-2">
       <div class="flex justify-between gap-3 text-sm">
         <span class="truncate font-semibold">{{ item.name }}</span>
-        <span class="shrink-0 text-slate-600">
-          {{ item.status === 'uploading' ? `Uploading · ${item.progress ?? 0}%` : 'Transcribing…' }}
-        </span>
+        <span class="shrink-0 text-slate-600">{{ progressLabel }}</span>
       </div>
       <div
         class="h-1.5 overflow-hidden rounded-full bg-slate-100"
@@ -100,10 +112,25 @@ const secondaryButton =
         >
           <path d="M20 6 9 17l-5-5" />
         </svg>
-        Ready<template v-if="readyLabel"> · {{ readyLabel }}</template>
+        Ready · {{ detailsLabel }}
+      </span>
+      <span v-else-if="item.status === 'uploaded'" class="flex items-center gap-1.5 text-[13px] text-green-700">
+        <svg
+          class="size-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+        Uploaded · {{ detailsLabel }}
       </span>
       <span v-else-if="item.status === 'failed'" class="text-[13px] text-red-700">{{ item.error }}</span>
-      <span v-else class="text-[13px] text-slate-600">Queued</span>
+      <span v-else class="text-[13px] text-slate-600">Queued · {{ detailsLabel }}</span>
     </div>
 
     <!-- Actions -->
@@ -134,7 +161,7 @@ const secondaryButton =
     </div>
 
     <button
-      v-else-if="item.status === 'failed' || item.status === 'queued'"
+      v-else-if="['failed', 'queued', 'uploaded'].includes(item.status)"
       type="button"
       :class="secondaryButton"
       @click="$emit('remove', item.id)"

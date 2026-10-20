@@ -1,10 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ACCEPTED_EXTENSIONS } from '@/types/upload'
-
-defineProps<{
-  selected: File[]
-}>()
+import { formatBytes } from '@/lib/format'
+import { ACCEPTED_EXTENSIONS, MAX_FILE_SIZE } from '@/types/upload'
 
 const emit = defineEmits<{
   add: [files: File[]]
@@ -71,11 +68,9 @@ function onChange() {
       </span>
     </span>
 
-    <span v-if="selected.length" class="text-sm font-medium text-slate-900">
-      {{ selected.length }} file{{ selected.length > 1 ? 's' : '' }} selected:
-      {{ selected.map((f) => f.name).join(', ') }}
+    <span class="text-[13px] text-slate-600">
+      {{ acceptLabel }} · up to {{ formatBytes(MAX_FILE_SIZE) }}
     </span>
-    <span v-else class="text-[13px] text-slate-600">{{ acceptLabel }}</span>
 
     <input
       id="file-input"
