@@ -53,14 +53,60 @@ describe('show', function () {
 
         $response->assertOk()
             ->assertExactJsonStructure(['data' => [
-                'id', 'name', 'extension', 'mime_type', 'size', 'chunk_size', 'total_chunks',
-                'language', 'subtitle_format', 'status', 'created_at', 'completed_at',
+                'id', 'name', 'extension', 'mime_type', 'last_modified', 'size', 'chunk_size', 'total_chunks',
+                'language', 'subtitle_format', 'status', 'progress', 'error', 'created_at', 'completed_at',
             ]])
             ->assertJsonPath('data.name', 'Interview.mp4')
             ->assertJsonPath('data.size', 45)
             ->assertJsonPath('data.language', 'en')
             ->assertJsonPath('data.subtitle_format', 'vtt')
             ->assertJsonPath('data.status', 'uploaded');
+    });
+
+    it('reports the progress of the current background step', function (UploadStatus $status) {
+        $upload = Upload::factory()->uploaded()->create(['status' => $status]);
+        $upload->reportProgress(42);
+
+        $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.progress', 42);
+    })->with([
+        'assembling' => UploadStatus::Assembling,
+        'transcribing' => UploadStatus::Transcribing,
+    ]);
+
+    it('reports no progress when nothing is running', function (UploadStatus $status) {
+        $upload = Upload::factory()->uploaded()->create(['status' => $status]);
+        $upload->reportProgress(42);
+
+        $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.progress', null);
+    })->with([
+        'uploading' => UploadStatus::Uploading,
+        'waiting to transcribe' => UploadStatus::Uploaded,
+        'ready' => UploadStatus::Ready,
+        'failed' => UploadStatus::Failed,
+    ]);
+
+    it('explains why processing failed', function () {
+        $upload = Upload::factory()->uploaded()->create();
+        $upload->markFailed('No speech was detected in this file.');
+
+        $this->getJson("/api/uploads/{$upload->id}")
+            ->assertJsonPath('data.status', 'failed')
+            ->assertJsonPath('data.error', 'No speech was detected in this file.');
+    });
+
+    it('links each generated subtitle file once ready', function () {
+        $upload = Upload::factory()->ready()->create(['subtitle_format' => 'both']);
+
+        $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.subtitles', [
+            'srt' => url("/api/uploads/{$upload->id}/subtitles/srt"),
+            'vtt' => url("/api/uploads/{$upload->id}/subtitles/vtt"),
+        ]);
+    });
+
+    it('has no subtitle links before the upload is ready', function () {
+        $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+
+        $this->getJson("/api/uploads/{$upload->id}")->assertJsonMissingPath('data.subtitles');
     });
 
     it('does not expose the storage path', function () {
@@ -106,6 +152,28 @@ describe('store', function () {
             'path' => null,
         ]);
     });
+
+    it('keeps the file modification time so a resumed upload can be matched to its file', function () {
+        $response = $this->postJson('/api/uploads', [
+            'name' => 'clip.mp4',
+            'size' => 45,
+            'last_modified' => 1792500000123,
+            'subtitle_format' => 'srt',
+        ]);
+
+        $response->assertCreated()->assertJsonPath('data.last_modified', 1792500000123);
+    });
+
+    it('rejects an invalid modification time', function (mixed $lastModified) {
+        $response = $this->postJson('/api/uploads', [
+            'name' => 'clip.mp4',
+            'size' => 45,
+            'last_modified' => $lastModified,
+            'subtitle_format' => 'srt',
+        ]);
+
+        $response->assertUnprocessable()->assertJsonValidationErrors(['last_modified']);
+    })->with(['negative' => -1, 'text' => 'yesterday', 'decimal' => 1.5]);
 
     it('calculates the number of chunks from the file size', function (int $size, int $expectedChunks) {
         $response = $this->postJson('/api/uploads', [
@@ -263,6 +331,26 @@ describe('destroy', function () {
         $response->assertNoContent();
         $this->assertModelMissing($upload);
         Storage::disk('local')->assertMissing($upload->path);
+    });
+
+    it('deletes the transcript, subtitles and leftover audio of a transcribed upload', function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->ready()->create(['subtitle_format' => 'both']);
+        $files = [
+            $upload->path,
+            $upload->transcriptPath(),
+            $upload->subtitlePath('srt'),
+            $upload->subtitlePath('vtt'),
+            "{$upload->audioDirectory()}/0000.wav",
+        ];
+        foreach ($files as $file) {
+            Storage::disk('local')->put($file, 'x');
+        }
+
+        $this->deleteJson("/api/uploads/{$upload->id}")->assertNoContent();
+
+        Storage::disk('local')->assertMissing($files);
+        Storage::disk('local')->assertMissing($upload->audioDirectory());
     });
 
     it('leaves other uploads and their files untouched', function () {
