@@ -53,7 +53,7 @@ services:
       POSTGRES_USER: laravel
       POSTGRES_PASSWORD: secret
     ports:
-      - "5432:5432"
+      - "5433:5432"  # host 5433: a native PostgreSQL 9.5 on Windows already uses 5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
