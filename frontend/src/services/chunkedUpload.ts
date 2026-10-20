@@ -80,7 +80,7 @@ export async function uploadInChunks(
   options.onStarted?.(upload)
 
   const ranges = chunkRanges(file.size, upload.chunk_size)
-  const sentBytes = new Array<number>(ranges.length).fill(0)
+  const sentBytes = Array.from({ length: ranges.length }, () => 0)
   const reportProgress = () => {
     const total = sentBytes.reduce((sum, bytes) => sum + bytes, 0)
     onProgress?.(Math.min(99, Math.floor((total / file.size) * 100)))

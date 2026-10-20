@@ -59,8 +59,10 @@ export const LANGUAGES = [
 
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a']
 
+/** Lowercase text after the last dot, or '' when there is none (same as PHP's pathinfo) */
 export function fileExtension(name: string): string {
-  return name.split('.').pop()?.toLowerCase() ?? ''
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? '' : name.slice(dot + 1).toLowerCase()
 }
 
 export function isAcceptedFile(file: File): boolean {
