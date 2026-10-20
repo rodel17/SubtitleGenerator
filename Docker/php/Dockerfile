@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libxml2-dev \
     libzip-dev \
     libpq-dev \
+    ffmpeg \
     && docker-php-ext-install \
     pdo_pgsql \
     mbstring \
@@ -20,6 +21,10 @@ RUN apt-get update && apt-get install -y \
     gd \
     zip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# phpredis (REDIS_CLIENT=phpredis) for Redis queues/cache and Horizon
+RUN pecl install redis \
+    && docker-php-ext-enable redis
 
 # PHP limits for chunked uploads
 COPY ./Docker/php/uploads.ini /usr/local/etc/php/conf.d/uploads.ini

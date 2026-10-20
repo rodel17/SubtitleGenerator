@@ -1,10 +1,22 @@
 <?php
 
 use App\Enums\UploadStatus;
+use App\Jobs\AssembleUpload;
+use App\Jobs\ExtractAudio;
+use App\Jobs\GenerateSubtitles;
+use App\Jobs\TranscribeAudio;
 use App\Models\Upload;
+use App\Services\ChunkedUploadService;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
-it('assembles the chunks into the original file and marks the upload uploaded', function () {
+beforeEach(function () {
+    // Assembly runs for real on the sync queue; the transcription chain needs ffmpeg and Whisper
+    Queue::fake([ExtractAudio::class]);
+});
+
+it('accepts the upload, then assembles the chunks into the original file', function () {
     Storage::fake('local');
     $this->travelTo('2026-10-20 12:00:00');
     $bytes = wavBytes();
@@ -13,14 +25,55 @@ it('assembles the chunks into the original file and marks the upload uploaded', 
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
 
-    $response->assertOk()
-        ->assertJsonPath('data.status', 'uploaded')
-        ->assertJsonPath('data.mime_type', 'audio/x-wav')
-        ->assertJsonPath('data.completed_at', '2026-10-20T12:00:00.000000Z');
+    $response->assertAccepted()
+        ->assertJsonPath('data.status', 'assembling')
+        ->assertJsonPath('data.mime_type', 'audio/x-wav');
     $upload->refresh();
     expect($upload->status)->toBe(UploadStatus::Uploaded);
+    expect($upload->completed_at->toDateTimeString())->toBe('2026-10-20 12:00:00');
     expect($upload->path)->toBe("uploads/{$upload->id}.wav");
     expect(Storage::disk('local')->get($upload->path))->toBe($bytes);
+});
+
+it('queues assembly on the uploads queue instead of doing it in the request', function () {
+    Queue::fake();
+    Storage::fake('local');
+    $bytes = wavBytes();
+    $upload = Upload::factory()->forContent($bytes)->create();
+    sendAllChunks($upload, $bytes);
+
+    $response = $this->postJson("/api/uploads/{$upload->id}/completion");
+
+    $response->assertAccepted()->assertJsonPath('data.status', 'assembling')->assertJsonPath('data.progress', 0);
+    Queue::assertPushedOn('uploads', AssembleUpload::class, fn (AssembleUpload $job) => $job->upload->is($upload));
+    expect($upload->fresh()->status)->toBe(UploadStatus::Assembling);
+    Storage::disk('local')->assertExists("chunks/{$upload->id}/0");
+});
+
+it('queues extraction, transcription and subtitles as a chain once the file is assembled', function () {
+    Storage::fake('local');
+    $bytes = wavBytes();
+    $upload = Upload::factory()->forContent($bytes)->create();
+    sendAllChunks($upload, $bytes);
+
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
+
+    Queue::assertPushedOn('transcription', ExtractAudio::class);
+    Queue::assertPushedWithChain(ExtractAudio::class, [TranscribeAudio::class, GenerateSubtitles::class]);
+});
+
+it('queues assembly only once when a concurrent request claimed the upload first', function () {
+    Queue::fake();
+    Storage::fake('local');
+    $bytes = wavBytes();
+    $upload = Upload::factory()->forContent($bytes)->create();
+    sendAllChunks($upload, $bytes);
+    // Another request moved it on after this one loaded the model
+    Upload::whereKey($upload->id)->update(['status' => UploadStatus::Assembling]);
+
+    expect(fn () => app(ChunkedUploadService::class)->complete($upload))
+        ->toThrow(HttpException::class, 'This upload is already complete.');
+    Queue::assertNothingPushed();
 });
 
 it('deletes the chunks once the file is assembled', function () {
@@ -29,7 +82,7 @@ it('deletes the chunks once the file is assembled', function () {
     $upload = Upload::factory()->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
 
-    $this->postJson("/api/uploads/{$upload->id}/completion")->assertOk();
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
 
     Storage::disk('local')->assertMissing("chunks/{$upload->id}");
 });
@@ -40,7 +93,7 @@ it('assembles chunks in numeric order when there are more than ten', function ()
     $upload = Upload::factory()->forContent($bytes, chunkSize: 5)->create();
     sendAllChunks($upload, $bytes);
 
-    $this->postJson("/api/uploads/{$upload->id}/completion")->assertOk();
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
 
     expect($upload->total_chunks)->toBe(15);
     expect(Storage::disk('local')->get($upload->fresh()->path))->toBe($bytes);
@@ -52,7 +105,7 @@ it('assembles the original file when chunks arrive out of order', function () {
     $upload = Upload::factory()->forContent($bytes)->create();
     sendAllChunks($upload, $bytes, order: [3, 0, 2, 1]);
 
-    $this->postJson("/api/uploads/{$upload->id}/completion")->assertOk();
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
 
     expect(Storage::disk('local')->get($upload->fresh()->path))->toBe($bytes);
 });
@@ -64,7 +117,7 @@ it('accepts each kind of media by its content', function (string $bytes, string 
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
 
-    $response->assertOk()->assertJsonPath('data.mime_type', $mimeType);
+    $response->assertAccepted()->assertJsonPath('data.mime_type', $mimeType);
 })->with([
     'wav audio' => [fn () => wavBytes(), 'clip.wav', 'audio/x-wav'],
     'mpeg transport stream' => [fn () => mpegTsBytes(), 'broadcast.ts', 'video/MP2T'],
@@ -76,7 +129,7 @@ it('stores the file under its id, whatever the original name contains', function
     $upload = Upload::factory()->forContent($bytes, '../../public/evil.ts')->create();
     sendAllChunks($upload, $bytes);
 
-    $this->postJson("/api/uploads/{$upload->id}/completion")->assertOk();
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
 
     expect($upload->fresh()->path)->toBe("uploads/{$upload->id}.ts");
     expect(Storage::disk('local')->allFiles())->toBe(["uploads/{$upload->id}.ts"]);
@@ -155,7 +208,7 @@ it('returns 409 when completion is requested twice', function () {
     $bytes = wavBytes();
     $upload = Upload::factory()->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
-    $this->postJson("/api/uploads/{$upload->id}/completion")->assertOk();
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
 

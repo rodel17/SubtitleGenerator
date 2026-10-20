@@ -1,21 +1,29 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { AxiosError, AxiosHeaders, type AxiosInstance, type AxiosResponse } from 'axios'
 
 import { api } from '@/lib/api'
-import { uploadInChunks, type ChunkedUploadOptions } from '@/services/chunkedUpload'
+import { saveBlob } from '@/lib/download'
+import { resumeInChunks, uploadInChunks, type ChunkedUploadOptions } from '@/services/chunkedUpload'
 import type { UploadResource } from '@/types/upload'
-import { useUploadsStore } from '../uploads'
+import { POLL_INTERVAL_MS, useUploadsStore } from '../uploads'
 
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   api: { get: vi.fn<AxiosInstance['get']>(), delete: vi.fn<AxiosInstance['delete']>() },
 }))
-vi.mock('@/services/chunkedUpload', () => ({ uploadInChunks: vi.fn<typeof uploadInChunks>() }))
+vi.mock('@/lib/download', () => ({ saveBlob: vi.fn<typeof saveBlob>() }))
+vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/chunkedUpload')>()),
+  uploadInChunks: vi.fn<typeof uploadInChunks>(),
+  resumeInChunks: vi.fn<typeof resumeInChunks>(),
+}))
 
 const get = vi.mocked(api.get)
 const destroy = vi.mocked(api.delete)
 const upload = vi.mocked(uploadInChunks)
+const resumeUpload = vi.mocked(resumeInChunks)
+const save = vi.mocked(saveBlob)
 
 function resource(overrides: Partial<UploadResource> = {}): UploadResource {
   return {
@@ -23,20 +31,23 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     name: 'clip.mp4',
     extension: 'mp4',
     mime_type: 'video/mp4',
+    last_modified: null,
+    progress: null,
+    error: null,
     size: 1024,
     chunk_size: 20,
     total_chunks: 52,
     language: 'en',
     subtitle_format: 'srt',
-    status: 'uploaded',
+    status: 'ready',
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
     ...overrides,
   }
 }
 
-function file(name = 'clip.mp4', bytes = 10): File {
-  return new File(['x'.repeat(bytes)], name)
+function file(name = 'clip.mp4', bytes = 10, lastModified = 1_700_000_000_000): File {
+  return new File(['x'.repeat(bytes)], name, { lastModified })
 }
 
 /** A promise you resolve or reject from the test, to hold an upload mid-flight. */
@@ -58,11 +69,28 @@ beforeEach(() => {
   get.mockReset()
   destroy.mockReset().mockResolvedValue({ data: '' })
   upload.mockReset()
+  resumeUpload.mockReset()
+  save.mockReset()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('fetchRecent', () => {
-  it('shows completed uploads from the server as uploaded', async () => {
-    get.mockResolvedValue({ data: { data: [resource({ language: 'ja', subtitle_format: 'vtt' })] } })
+  it('shows ready uploads from the server with their download links', async () => {
+    get.mockResolvedValue({
+      data: {
+        data: [
+          resource({
+            language: 'ja',
+            subtitle_format: 'vtt',
+            last_modified: 123,
+            subtitles: { vtt: 'http://api.test/subtitles/vtt' },
+          }),
+        ],
+      },
+    })
     const store = useUploadsStore()
 
     await store.fetchRecent()
@@ -75,15 +103,18 @@ describe('fetchRecent', () => {
         name: 'clip.mp4',
         kind: 'video',
         size: 1024,
-        status: 'uploaded',
+        lastModified: 123,
+        status: 'ready',
+        progress: undefined,
         error: undefined,
         language: 'ja',
         format: 'vtt',
+        subtitles: { vtt: 'http://api.test/subtitles/vtt' },
       },
     ])
   })
 
-  it('shows uploads that never finished as interrupted failures', async () => {
+  it('shows uploads that never finished as interrupted, ready to resume', async () => {
     get.mockResolvedValue({ data: { data: [resource({ status: 'uploading', name: 'talk.mp3' })] } })
     const store = useUploadsStore()
 
@@ -91,9 +122,32 @@ describe('fetchRecent', () => {
 
     expect(store.items[0]).toMatchObject({
       kind: 'audio',
-      status: 'failed',
-      error: 'Upload was interrupted. Remove it and try again.',
+      status: 'interrupted',
+      error: 'Upload was interrupted. Resume to continue where it stopped.',
     })
+  })
+
+  it.each([
+    ['assembling', 'processing'],
+    ['uploaded', 'uploaded'],
+    ['transcribing', 'transcribing'],
+  ] as const)('shows a %s upload as %s with its progress', async (serverStatus, status) => {
+    vi.useFakeTimers()
+    get.mockResolvedValue({ data: { data: [resource({ status: serverStatus, progress: 30 })] } })
+    const store = useUploadsStore()
+
+    await store.fetchRecent()
+
+    expect(store.items[0]).toMatchObject({ status, progress: 30 })
+  })
+
+  it('shows why the server could not process an upload', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ status: 'failed', error: 'No speech was detected in this file.' })] } })
+    const store = useUploadsStore()
+
+    await store.fetchRecent()
+
+    expect(store.items[0]).toMatchObject({ status: 'failed', error: 'No speech was detected in this file.' })
   })
 
   it('leaves the language unset when the server has none', async () => {
@@ -201,7 +255,7 @@ describe('enqueue', () => {
     await tick()
 
     expect(upload).toHaveBeenCalledTimes(2)
-    expect(store.items.map((item) => item.status)).toEqual(['uploaded', 'uploaded'])
+    expect(store.items.map((item) => item.status)).toEqual(['ready', 'ready'])
   })
 
   it('picks up files added while another upload is running', async () => {
@@ -242,7 +296,7 @@ describe('enqueue', () => {
     hold.resolve()
     await tick()
 
-    expect(item().status).toBe('uploaded')
+    expect(item().status).toBe('ready')
   })
 
   it('marks the upload failed with the server message', async () => {
@@ -272,7 +326,7 @@ describe('enqueue', () => {
     store.enqueue([file('a.mp4'), file('b.mp4')], 'en', 'srt')
     await tick()
 
-    expect(store.items.map((item) => item.status)).toEqual(['failed', 'uploaded'])
+    expect(store.items.map((item) => item.status)).toEqual(['failed', 'ready'])
   })
 })
 
@@ -346,15 +400,61 @@ describe('remove', () => {
     expect(store.items).toEqual([])
   })
 
-  it('still removes the row when the server delete fails', async () => {
+  it('keeps the row until the server has deleted it', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-8' })] } })
+    const response = deferred<{ data: string }>()
+    destroy.mockReturnValue(response.promise)
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    const removing = store.remove('server-8')
+    await tick()
+    expect(store.items).toHaveLength(1)
+    response.resolve({ data: '' })
+    await removing
+
+    expect(store.items).toEqual([])
+  })
+
+  it('keeps the row and rejects with a readable message when the delete fails', async () => {
     get.mockResolvedValue({ data: { data: [resource({ id: 'server-8' })] } })
     destroy.mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'))
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await expect(store.remove('server-8')).rejects.toThrow('Network Error')
+
+    expect(store.items.map((item) => item.id)).toEqual(['server-8'])
+  })
+
+  it('treats an upload the server no longer has as deleted', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-8' })] } })
+    destroy.mockRejectedValue(httpError(404))
     const store = useUploadsStore()
     await store.fetchRecent()
 
     await expect(store.remove('server-8')).resolves.toBeUndefined()
 
     expect(store.items).toEqual([])
+  })
+
+  it('offers to resume a cancelled upload whose delete failed', async () => {
+    upload.mockImplementation((_file, options) => {
+      options.onStarted?.(resource({ id: 'server-5', status: 'uploading' }))
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    })
+    destroy.mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'))
+    const store = useUploadsStore()
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+    const id = store.items[0]!.id
+
+    await expect(store.remove(id)).rejects.toThrow('Network Error')
+
+    expect(store.items[0]).toMatchObject({ status: 'interrupted' })
+    expect(store.hasFileFor(id)).toBe(true)
   })
 
   it('ignores an id it does not know', async () => {
@@ -389,7 +489,7 @@ describe('hasActiveUploads', () => {
     expect(store.hasActiveUploads).toBe(false)
   })
 
-  it('is true while the server is assembling the file', async () => {
+  it('is false once the browser has handed the file over, while the server assembles it', async () => {
     upload.mockImplementation((_file, options) => {
       options.onAssembling?.()
       return new Promise(() => {})
@@ -400,6 +500,342 @@ describe('hasActiveUploads', () => {
     await tick()
 
     expect(store.items[0]!.status).toBe('processing')
-    expect(store.hasActiveUploads).toBe(true)
+    expect(store.hasActiveUploads).toBe(false)
+  })
+})
+
+function httpError(status: number, data: unknown = {}): AxiosError {
+  const response = { status, statusText: '', data, headers: {}, config: { headers: new AxiosHeaders() } } as AxiosResponse
+  return new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_RESPONSE', undefined, undefined, response)
+}
+
+const networkError = () => new AxiosError('Network Error', 'ERR_NETWORK')
+
+describe('following server processing', () => {
+  /** Upload one file whose completion the server accepts with the given status. */
+  async function uploadAccepted(store: ReturnType<typeof useUploadsStore>, accepted: Partial<UploadResource>) {
+    upload.mockImplementation(async (_file, options) => {
+      options.onStarted?.(resource({ id: 'server-1', status: 'uploading' }))
+      return resource({ id: 'server-1', ...accepted })
+    })
+    store.enqueue([file()], 'en', 'srt')
+    await vi.advanceTimersByTimeAsync(0)
+  }
+
+  it('asks the server for progress every two seconds until the subtitles are ready', async () => {
+    vi.useFakeTimers()
+    const store = useUploadsStore()
+    get
+      .mockResolvedValueOnce({ data: { data: resource({ status: 'transcribing', progress: 40 }) } })
+      .mockResolvedValueOnce({
+        data: { data: resource({ status: 'ready', subtitles: { srt: 'http://api.test/subtitles/srt' } }) },
+      })
+    await uploadAccepted(store, { status: 'assembling', progress: 0 })
+    expect(store.items[0]).toMatchObject({ status: 'processing', progress: 0 })
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(get).toHaveBeenLastCalledWith('/uploads/server-1')
+    expect(store.items[0]).toMatchObject({ status: 'transcribing', progress: 40 })
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(store.items[0]).toMatchObject({
+      status: 'ready',
+      progress: undefined,
+      subtitles: { srt: 'http://api.test/subtitles/srt' },
+    })
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the reason when processing fails, and stops asking', async () => {
+    vi.useFakeTimers()
+    const store = useUploadsStore()
+    get.mockResolvedValue({ data: { data: resource({ status: 'failed', error: 'No speech was detected in this file.' }) } })
+    await uploadAccepted(store, { status: 'assembling' })
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+
+    expect(store.items[0]).toMatchObject({ status: 'failed', error: 'No speech was detected in this file.' })
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps asking through a temporary network error', async () => {
+    vi.useFakeTimers()
+    const store = useUploadsStore()
+    get.mockRejectedValueOnce(networkError()).mockResolvedValueOnce({ data: { data: resource({ status: 'ready' }) } })
+    await uploadAccepted(store, { status: 'transcribing', progress: 10 })
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(store.items[0]).toMatchObject({ status: 'transcribing', progress: 10 })
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(store.items[0]!.status).toBe('ready')
+  })
+
+  it('marks the row failed when the upload was deleted on the server', async () => {
+    vi.useFakeTimers()
+    const store = useUploadsStore()
+    get.mockRejectedValue(httpError(404))
+    await uploadAccepted(store, { status: 'uploaded' })
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(store.items[0]).toMatchObject({ status: 'failed', error: 'This upload no longer exists.' })
+  })
+
+  it('follows uploads that were already processing when the page loaded', async () => {
+    vi.useFakeTimers()
+    get
+      .mockResolvedValueOnce({ data: { data: [resource({ id: 'server-2', status: 'transcribing', progress: 5 })] } })
+      .mockResolvedValueOnce({ data: { data: resource({ id: 'server-2', status: 'transcribing', progress: 60 }) } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(get).toHaveBeenLastCalledWith('/uploads/server-2')
+    expect(store.items[0]!.progress).toBe(60)
+  })
+
+  it('does not poll when nothing is processing', async () => {
+    vi.useFakeTimers()
+    get.mockResolvedValue({ data: { data: [resource({ status: 'ready' }), resource({ id: 'b', status: 'failed' })] } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('resume', () => {
+  /** Start an upload that the network cuts off after the server created it. */
+  async function interruptedUpload(store: ReturnType<typeof useUploadsStore>, selected = file()) {
+    upload.mockImplementationOnce(async (_file, options) => {
+      options.onStarted?.(resource({ id: 'server-4', status: 'uploading' }))
+      throw networkError()
+    })
+    store.enqueue([selected], 'en', 'srt')
+    await tick()
+    return store.items[0]!
+  }
+
+  it('keeps an upload cut off by the network as interrupted, with its file', async () => {
+    const store = useUploadsStore()
+
+    const item = await interruptedUpload(store)
+
+    expect(item).toMatchObject({
+      status: 'interrupted',
+      error: 'Upload was interrupted. Resume to continue where it stopped.',
+    })
+    expect(store.hasFileFor(item.id)).toBe(true)
+  })
+
+  it('resumes with the kept file on the same server upload', async () => {
+    const store = useUploadsStore()
+    const selected = file()
+    const item = await interruptedUpload(store, selected)
+    resumeUpload.mockResolvedValue(resource({ id: 'server-4' }))
+
+    expect(store.resume(item.id)).toBeUndefined()
+    await tick()
+
+    expect(resumeUpload).toHaveBeenCalledWith(selected, 'server-4', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(upload).toHaveBeenCalledTimes(1)
+    expect(store.items[0]!.status).toBe('ready')
+    expect(store.hasFileFor(item.id)).toBe(false)
+  })
+
+  it('becomes interrupted again when the resumed upload is cut off too', async () => {
+    const store = useUploadsStore()
+    const item = await interruptedUpload(store)
+    resumeUpload.mockRejectedValue(networkError())
+
+    store.resume(item.id)
+    await tick()
+
+    expect(store.items[0]!.status).toBe('interrupted')
+    expect(store.hasFileFor(item.id)).toBe(true)
+  })
+
+  it('fails instead of offering resume when the server rejected the file', async () => {
+    upload.mockImplementation(async (_file, options) => {
+      options.onStarted?.(resource({ id: 'server-4', status: 'uploading' }))
+      throw httpError(422, { errors: { file: ['The file is not a supported video or audio file.'] } })
+    })
+    const store = useUploadsStore()
+
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+
+    expect(store.items[0]).toMatchObject({ status: 'failed', error: 'The file is not a supported video or audio file.' })
+    expect(store.hasFileFor(store.items[0]!.id)).toBe(false)
+  })
+
+  describe('after a page reload', () => {
+    async function reloadedInterruptedUpload(overrides: Partial<UploadResource> = {}) {
+      get.mockResolvedValue({
+        data: {
+          data: [
+            resource({
+              id: 'server-6',
+              status: 'uploading',
+              name: 'clip.mp4',
+              size: 10,
+              last_modified: 1_700_000_000_000,
+              ...overrides,
+            }),
+          ],
+        },
+      })
+      const store = useUploadsStore()
+      await store.fetchRecent()
+      return store
+    }
+
+    it('needs the user to pick the file again', async () => {
+      const store = await reloadedInterruptedUpload()
+
+      expect(store.hasFileFor('server-6')).toBe(false)
+      expect(store.resume('server-6')).toBe('Choose the file to resume.')
+      expect(resumeUpload).not.toHaveBeenCalled()
+    })
+
+    it('resumes with the picked file when it is the same file', async () => {
+      const store = await reloadedInterruptedUpload()
+      resumeUpload.mockResolvedValue(resource({ id: 'server-6' }))
+      const picked = file('clip.mp4', 10, 1_700_000_000_000)
+
+      expect(store.resume('server-6', picked)).toBeUndefined()
+      await tick()
+
+      expect(resumeUpload).toHaveBeenCalledWith(picked, 'server-6', expect.anything())
+    })
+
+    it.each([
+      ['a different name', () => file('other.mp4', 10, 1_700_000_000_000)],
+      ['a different size', () => file('clip.mp4', 11, 1_700_000_000_000)],
+      ['a different modification time', () => file('clip.mp4', 10, 1_600_000_000_000)],
+    ])('refuses a file with %s and says which file to pick', async (_case, picked) => {
+      const store = await reloadedInterruptedUpload()
+
+      const error = store.resume('server-6', picked())
+
+      expect(error).toBe('That is a different file. Choose "clip.mp4" (10 B) to resume.')
+      expect(store.items[0]).toMatchObject({ status: 'interrupted', error })
+      expect(resumeUpload).not.toHaveBeenCalled()
+    })
+
+    it('matches on name and size alone when the server has no modification time', async () => {
+      const store = await reloadedInterruptedUpload({ last_modified: null })
+      resumeUpload.mockResolvedValue(resource({ id: 'server-6' }))
+
+      expect(store.resume('server-6', file('clip.mp4', 10, 42))).toBeUndefined()
+    })
+  })
+
+  it('ignores rows that are not interrupted', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-9', status: 'ready' })] } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    expect(store.resume('server-9', file())).toBeUndefined()
+
+    expect(resumeUpload).not.toHaveBeenCalled()
+    expect(store.items[0]!.status).toBe('ready')
+  })
+})
+
+describe('download', () => {
+  const srtUrl = 'http://api.test/uploads/server-1/subtitles/srt'
+
+  async function readyStore() {
+    get.mockResolvedValueOnce({
+      data: { data: [resource({ name: 'Team Interview.mp4', subtitle_format: 'both', subtitles: { srt: srtUrl, vtt: 'http://api.test/v' } })] },
+    })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+    return store
+  }
+
+  it('fetches the file and saves it under the media name with the format extension', async () => {
+    const store = await readyStore()
+    const blob = new Blob(['1\n00:00:00,000 --> 00:00:01,000\nHi\n'])
+    get.mockResolvedValueOnce({ data: blob })
+
+    await store.download('server-1', 'srt')
+
+    expect(get).toHaveBeenLastCalledWith(srtUrl, { responseType: 'blob' })
+    expect(save).toHaveBeenCalledWith(blob, 'Team Interview.srt')
+  })
+
+  it('marks the format as downloading until the file arrives', async () => {
+    const store = await readyStore()
+    const response = deferred<{ data: Blob }>()
+    get.mockReturnValueOnce(response.promise)
+
+    const downloading = store.download('server-1', 'srt')
+    expect(store.items[0]!.downloading).toEqual(['srt'])
+    response.resolve({ data: new Blob(['x']) })
+    await downloading
+
+    expect(store.items[0]!.downloading).toEqual([])
+  })
+
+  it('ignores a second click on a format that is still downloading', async () => {
+    const store = await readyStore()
+    get.mockReturnValueOnce(new Promise(() => {}))
+
+    void store.download('server-1', 'srt')
+    await store.download('server-1', 'srt')
+
+    expect(get).toHaveBeenCalledTimes(2) // the list, then one file request
+  })
+
+  it('can download both formats at the same time', async () => {
+    const store = await readyStore()
+    get.mockReturnValue(new Promise(() => {}))
+
+    void store.download('server-1', 'srt')
+    void store.download('server-1', 'vtt')
+
+    expect(store.items[0]!.downloading).toEqual(['srt', 'vtt'])
+  })
+
+  it('shows an error and saves nothing when the file cannot be fetched', async () => {
+    const store = await readyStore()
+    get.mockRejectedValueOnce(httpError(404))
+
+    await store.download('server-1', 'srt')
+
+    expect(store.items[0]).toMatchObject({
+      status: 'ready',
+      downloading: [],
+      downloadError: 'The SRT file could not be downloaded. Please try again.',
+    })
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('clears the previous error when a download succeeds', async () => {
+    const store = await readyStore()
+    get.mockRejectedValueOnce(networkError()).mockResolvedValueOnce({ data: new Blob(['x']) })
+    await store.download('server-1', 'srt')
+
+    await store.download('server-1', 'srt')
+
+    expect(store.items[0]!.downloadError).toBeUndefined()
+  })
+
+  it('does nothing for a format that was not generated', async () => {
+    get.mockResolvedValueOnce({ data: { data: [resource({ subtitles: { srt: srtUrl } })] } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await store.download('server-1', 'vtt')
+
+    expect(get).toHaveBeenCalledTimes(1)
   })
 })

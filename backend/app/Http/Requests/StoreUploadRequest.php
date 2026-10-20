@@ -28,6 +28,7 @@ class StoreUploadRequest extends FormRequest
             'name' => ['required', 'string', 'max:255'],
             'size' => ['required', 'integer', 'min:1', 'max:'.config('uploads.max_size')],
             'mime_type' => ['nullable', 'string', 'max:255'],
+            'last_modified' => ['nullable', 'integer', 'min:0'],
             'language' => ['nullable', 'string', 'max:10'],
             'subtitle_format' => ['required', Rule::in(['srt', 'vtt', 'both'])],
         ];

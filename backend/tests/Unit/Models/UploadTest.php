@@ -27,7 +27,19 @@ test('only an upload that is still receiving chunks counts as uploading', functi
     expect($upload->isUploading())->toBe($expected);
 })->with([
     'uploading' => [UploadStatus::Uploading, true],
+    'assembling' => [UploadStatus::Assembling, false],
     'uploaded' => [UploadStatus::Uploaded, false],
+    'transcribing' => [UploadStatus::Transcribing, false],
+    'ready' => [UploadStatus::Ready, false],
+    'failed' => [UploadStatus::Failed, false],
+]);
+
+test('"both" generates srt and vtt, any other format just itself', function (string $format, array $expected) {
+    expect((new Upload(['subtitle_format' => $format]))->subtitleFormats())->toBe($expected);
+})->with([
+    'srt' => ['srt', ['srt']],
+    'vtt' => ['vtt', ['vtt']],
+    'both' => ['both', ['srt', 'vtt']],
 ]);
 
 test('a new upload starts as uploading', function () {

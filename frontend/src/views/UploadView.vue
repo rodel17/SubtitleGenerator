@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FileDropzone from '@/components/upload/FileDropzone.vue'
 import FormatToggle from '@/components/upload/FormatToggle.vue'
 import SelectedFilePreview from '@/components/upload/SelectedFilePreview.vue'
@@ -12,6 +13,7 @@ import {
   LANGUAGES,
   MAX_FILE_SIZE,
   type SubtitleFormat,
+  type UploadItem,
 } from '@/types/upload'
 
 const uploads = useUploadsStore()
@@ -57,6 +59,96 @@ function generate() {
     format.value,
   )
   selectedFiles.value = []
+}
+
+// Deleting something the server already has asks first, and waits for the server
+const pendingRemoval = ref<UploadItem | null>(null)
+const isRemoving = ref(false)
+const removalError = ref<string | null>(null)
+
+const removalCopy = computed(() => {
+  const item = pendingRemoval.value
+  if (!item) return null
+
+  if (item.status === 'uploading') {
+    return {
+      title: 'Stop this upload?',
+      message: `The upload of "${item.name}" will stop and the part already sent will be deleted.`,
+      confirmLabel: 'Stop upload',
+      busyLabel: 'Stopping…',
+      cancelLabel: 'Keep uploading',
+    }
+  }
+
+  return {
+    title: 'Delete this upload?',
+    message:
+      item.status === 'ready'
+        ? `"${item.name}" and its subtitles will be deleted. This can't be undone.`
+        : `"${item.name}" and everything uploaded so far will be deleted. This can't be undone.`,
+    confirmLabel: 'Delete',
+    busyLabel: 'Deleting…',
+    cancelLabel: 'Cancel',
+  }
+})
+
+function requestRemove(id: string) {
+  const item = uploads.items.find((candidate) => candidate.id === id)
+  if (!item) return
+
+  // Nothing on the server yet (rejected or still queued): nothing to lose
+  if (!item.serverId) {
+    void uploads.remove(id)
+    return
+  }
+
+  removalError.value = null
+  pendingRemoval.value = item
+}
+
+async function confirmRemove() {
+  if (!pendingRemoval.value) return
+
+  isRemoving.value = true
+  removalError.value = null
+
+  try {
+    await uploads.remove(pendingRemoval.value.id)
+    pendingRemoval.value = null
+  } catch (error) {
+    removalError.value = error instanceof Error ? error.message : 'Could not delete the upload.'
+  } finally {
+    isRemoving.value = false
+  }
+}
+
+function cancelRemove() {
+  pendingRemoval.value = null
+  removalError.value = null
+}
+
+// After a reload the browser no longer has the file, so the user picks it again
+const resumePicker = ref<HTMLInputElement | null>(null)
+const resumingId = ref<string | null>(null)
+
+function resume(id: string) {
+  if (uploads.hasFileFor(id)) {
+    uploads.resume(id)
+    return
+  }
+
+  resumingId.value = id
+  resumePicker.value?.click()
+}
+
+function resumeWithPickedFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+
+  if (file && resumingId.value) uploads.resume(resumingId.value, file)
+
+  resumingId.value = null
+  input.value = ''
 }
 
 // Leaving the page would kill in-flight uploads, so ask first
@@ -159,8 +251,10 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
           v-for="item in uploads.items"
           :key="item.id"
           :item="item"
-          @cancel="uploads.remove"
-          @remove="uploads.remove"
+          @cancel="requestRemove"
+          @remove="requestRemove"
+          @resume="resume"
+          @download="uploads.download"
         />
       </ul>
       <p
@@ -172,6 +266,27 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
           uploads.isLoading ? 'Loading uploads…' : (uploads.loadError ?? 'No uploads yet.')
         }}
       </p>
+      <input
+        ref="resumePicker"
+        type="file"
+        class="hidden"
+        aria-label="Choose the file to resume"
+        data-test="resume-picker"
+        @change="resumeWithPickedFile"
+      />
     </section>
+
+    <ConfirmDialog
+      :open="removalCopy !== null"
+      :title="removalCopy?.title ?? ''"
+      :message="removalCopy?.message ?? ''"
+      :confirm-label="removalCopy?.confirmLabel ?? ''"
+      :busy-label="removalCopy?.busyLabel"
+      :cancel-label="removalCopy?.cancelLabel"
+      :busy="isRemoving"
+      :error="removalError"
+      @confirm="confirmRemove"
+      @cancel="cancelRemove"
+    />
   </main>
 </template>
