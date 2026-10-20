@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { AxiosError, AxiosHeaders, type AxiosInstance, type AxiosResponse } from 'axios'
 
 import { api } from '@/lib/api'
+import { saveBlob } from '@/lib/download'
 import { resumeInChunks, uploadInChunks, type ChunkedUploadOptions } from '@/services/chunkedUpload'
 import type { UploadResource } from '@/types/upload'
 import { POLL_INTERVAL_MS, useUploadsStore } from '../uploads'
@@ -11,6 +12,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   api: { get: vi.fn<AxiosInstance['get']>(), delete: vi.fn<AxiosInstance['delete']>() },
 }))
+vi.mock('@/lib/download', () => ({ saveBlob: vi.fn<typeof saveBlob>() }))
 vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/chunkedUpload')>()),
   uploadInChunks: vi.fn<typeof uploadInChunks>(),
@@ -21,6 +23,7 @@ const get = vi.mocked(api.get)
 const destroy = vi.mocked(api.delete)
 const upload = vi.mocked(uploadInChunks)
 const resumeUpload = vi.mocked(resumeInChunks)
+const save = vi.mocked(saveBlob)
 
 function resource(overrides: Partial<UploadResource> = {}): UploadResource {
   return {
@@ -67,6 +70,7 @@ beforeEach(() => {
   destroy.mockReset().mockResolvedValue({ data: '' })
   upload.mockReset()
   resumeUpload.mockReset()
+  save.mockReset()
 })
 
 afterEach(() => {
@@ -396,15 +400,61 @@ describe('remove', () => {
     expect(store.items).toEqual([])
   })
 
-  it('still removes the row when the server delete fails', async () => {
+  it('keeps the row until the server has deleted it', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-8' })] } })
+    const response = deferred<{ data: string }>()
+    destroy.mockReturnValue(response.promise)
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    const removing = store.remove('server-8')
+    await tick()
+    expect(store.items).toHaveLength(1)
+    response.resolve({ data: '' })
+    await removing
+
+    expect(store.items).toEqual([])
+  })
+
+  it('keeps the row and rejects with a readable message when the delete fails', async () => {
     get.mockResolvedValue({ data: { data: [resource({ id: 'server-8' })] } })
     destroy.mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'))
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await expect(store.remove('server-8')).rejects.toThrow('Network Error')
+
+    expect(store.items.map((item) => item.id)).toEqual(['server-8'])
+  })
+
+  it('treats an upload the server no longer has as deleted', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-8' })] } })
+    destroy.mockRejectedValue(httpError(404))
     const store = useUploadsStore()
     await store.fetchRecent()
 
     await expect(store.remove('server-8')).resolves.toBeUndefined()
 
     expect(store.items).toEqual([])
+  })
+
+  it('offers to resume a cancelled upload whose delete failed', async () => {
+    upload.mockImplementation((_file, options) => {
+      options.onStarted?.(resource({ id: 'server-5', status: 'uploading' }))
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    })
+    destroy.mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'))
+    const store = useUploadsStore()
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+    const id = store.items[0]!.id
+
+    await expect(store.remove(id)).rejects.toThrow('Network Error')
+
+    expect(store.items[0]).toMatchObject({ status: 'interrupted' })
+    expect(store.hasFileFor(id)).toBe(true)
   })
 
   it('ignores an id it does not know', async () => {
@@ -696,5 +746,96 @@ describe('resume', () => {
 
     expect(resumeUpload).not.toHaveBeenCalled()
     expect(store.items[0]!.status).toBe('ready')
+  })
+})
+
+describe('download', () => {
+  const srtUrl = 'http://api.test/uploads/server-1/subtitles/srt'
+
+  async function readyStore() {
+    get.mockResolvedValueOnce({
+      data: { data: [resource({ name: 'Team Interview.mp4', subtitle_format: 'both', subtitles: { srt: srtUrl, vtt: 'http://api.test/v' } })] },
+    })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+    return store
+  }
+
+  it('fetches the file and saves it under the media name with the format extension', async () => {
+    const store = await readyStore()
+    const blob = new Blob(['1\n00:00:00,000 --> 00:00:01,000\nHi\n'])
+    get.mockResolvedValueOnce({ data: blob })
+
+    await store.download('server-1', 'srt')
+
+    expect(get).toHaveBeenLastCalledWith(srtUrl, { responseType: 'blob' })
+    expect(save).toHaveBeenCalledWith(blob, 'Team Interview.srt')
+  })
+
+  it('marks the format as downloading until the file arrives', async () => {
+    const store = await readyStore()
+    const response = deferred<{ data: Blob }>()
+    get.mockReturnValueOnce(response.promise)
+
+    const downloading = store.download('server-1', 'srt')
+    expect(store.items[0]!.downloading).toEqual(['srt'])
+    response.resolve({ data: new Blob(['x']) })
+    await downloading
+
+    expect(store.items[0]!.downloading).toEqual([])
+  })
+
+  it('ignores a second click on a format that is still downloading', async () => {
+    const store = await readyStore()
+    get.mockReturnValueOnce(new Promise(() => {}))
+
+    void store.download('server-1', 'srt')
+    await store.download('server-1', 'srt')
+
+    expect(get).toHaveBeenCalledTimes(2) // the list, then one file request
+  })
+
+  it('can download both formats at the same time', async () => {
+    const store = await readyStore()
+    get.mockReturnValue(new Promise(() => {}))
+
+    void store.download('server-1', 'srt')
+    void store.download('server-1', 'vtt')
+
+    expect(store.items[0]!.downloading).toEqual(['srt', 'vtt'])
+  })
+
+  it('shows an error and saves nothing when the file cannot be fetched', async () => {
+    const store = await readyStore()
+    get.mockRejectedValueOnce(httpError(404))
+
+    await store.download('server-1', 'srt')
+
+    expect(store.items[0]).toMatchObject({
+      status: 'ready',
+      downloading: [],
+      downloadError: 'The SRT file could not be downloaded. Please try again.',
+    })
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('clears the previous error when a download succeeds', async () => {
+    const store = await readyStore()
+    get.mockRejectedValueOnce(networkError()).mockResolvedValueOnce({ data: new Blob(['x']) })
+    await store.download('server-1', 'srt')
+
+    await store.download('server-1', 'srt')
+
+    expect(store.items[0]!.downloadError).toBeUndefined()
+  })
+
+  it('does nothing for a format that was not generated', async () => {
+    get.mockResolvedValueOnce({ data: { data: [resource({ subtitles: { srt: srtUrl } })] } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await store.download('server-1', 'vtt')
+
+    expect(get).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { fileExtension, isAcceptedFile, languageLabel, mediaKindOf } from '../upload'
+import { fileExtension, isAcceptedFile, languageLabel, mediaKindOf, subtitleFileName } from '../upload'
 
 describe('fileExtension', () => {
   it.each([
@@ -65,5 +65,16 @@ describe('languageLabel', () => {
 
   it('returns undefined when no language is set', () => {
     expect(languageLabel(undefined)).toBeUndefined()
+  })
+})
+
+describe('subtitleFileName', () => {
+  it.each([
+    ['Team Interview.mp4', 'srt', 'Team Interview.srt'],
+    ['clip.final.mov', 'vtt', 'clip.final.vtt'],
+    ['no-extension', 'srt', 'no-extension.srt'],
+    ['.hidden', 'vtt', '.hidden.vtt'],
+  ] as const)('names the %s subtitles %s -> %s', (media, format, expected) => {
+    expect(subtitleFileName(media, format)).toBe(expected)
   })
 })

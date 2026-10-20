@@ -73,6 +73,7 @@ export class FakeApi {
   onStart?: Handler
   onChunk?: Handler
   onComplete?: Handler
+  onSubtitle?: Handler
 
   constructor(private readonly page: Page) {}
 
@@ -144,6 +145,13 @@ export class FakeApi {
       const upload = this.uploads.find((candidate) => candidate.id === completion[1])!
       Object.assign(upload, { status: 'assembling', progress: 0 })
       return this.json(route, 202, { data: upload })
+    }
+
+    const subtitle = path.match(/^\/uploads\/([^/]+)\/subtitles\/(srt|vtt)$/)
+    if (method === 'GET' && subtitle) {
+      if (this.onSubtitle) return this.onSubtitle(route, request)
+      const body = subtitle[2] === 'vtt' ? 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n' : '1\n00:00:00,000 --> 00:00:01,000\nHello\n'
+      return route.fulfill({ status: 200, contentType: 'text/plain', body })
     }
 
     const single = path.match(/^\/uploads\/([^/]+)$/)

@@ -143,23 +143,58 @@ describe('UploadListItem', () => {
     expect(wrapper.emitted('remove')).toEqual([['item-1']])
   })
 
-  it('offers edit and a download link for a ready file', async () => {
+  it('offers edit, download and delete for a ready file', async () => {
     const wrapper = mount(UploadListItem, {
       props: { item: item({ status: 'ready', subtitles: { srt: 'http://api.test/uploads/1/subtitles/srt' } }) },
     })
 
     expect(wrapper.text()).toContain('Ready · English · SRT · 1.2 MB')
-    expect(buttonNames(wrapper)).toEqual(['Edit'])
-    const links = wrapper.findAll('a[download]')
-    expect(links.map((link) => [link.text(), link.attributes('href')])).toEqual([
-      ['Download', 'http://api.test/uploads/1/subtitles/srt'],
-    ])
-    await wrapper.get('button').trigger('click')
+    expect(buttonNames(wrapper)).toEqual(['Edit', 'Download', 'Delete upload'])
+    await wrapper.findAll('button')[0]!.trigger('click')
+    await wrapper.findAll('button')[1]!.trigger('click')
 
     expect(wrapper.emitted('edit')).toEqual([['item-1']])
+    expect(wrapper.emitted('download')).toEqual([['item-1', 'srt']])
   })
 
-  it('offers one download link per format when both were generated', () => {
+  it('shows a spinner and blocks a second click while the file downloads', () => {
+    const wrapper = mount(UploadListItem, {
+      props: { item: item({ status: 'ready', subtitles: { srt: 'http://api.test/s.srt' }, downloading: ['srt'] }) },
+    })
+
+    const button = wrapper.findAll('button')[1]!
+    expect(button.text()).toBe('Downloading…')
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(button.attributes('aria-busy')).toBe('true')
+    expect(button.find('[data-test="spinner"]').exists()).toBe(true)
+  })
+
+  it('shows why a download did not work', () => {
+    const wrapper = mount(UploadListItem, {
+      props: {
+        item: item({
+          status: 'ready',
+          subtitles: { srt: 'http://api.test/s.srt' },
+          downloadError: 'The SRT file could not be downloaded. Please try again.',
+        }),
+      },
+    })
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('The SRT file could not be downloaded. Please try again.')
+    expect(wrapper.text()).toContain('Ready · English · SRT · 1.2 MB')
+  })
+
+  it('lets a ready upload be deleted', async () => {
+    const wrapper = mount(UploadListItem, {
+      props: { item: item({ status: 'ready', subtitles: { srt: 'http://api.test/s.srt' } }) },
+    })
+
+    await wrapper.get('button[aria-label="Delete upload"]').trigger('click')
+
+    expect(wrapper.emitted('remove')).toEqual([['item-1']])
+  })
+
+  it('offers one download button per format when both were generated', async () => {
     const wrapper = mount(UploadListItem, {
       props: {
         item: item({
@@ -170,10 +205,30 @@ describe('UploadListItem', () => {
       },
     })
 
-    expect(wrapper.findAll('a[download]').map((link) => [link.text(), link.attributes('href')])).toEqual([
-      ['SRT', 'http://api.test/s.srt'],
-      ['VTT', 'http://api.test/s.vtt'],
-    ])
+    expect(buttonNames(wrapper)).toEqual(['Edit', 'Download SRT', 'Download VTT', 'Delete upload'])
+    await wrapper.get('button[aria-label="Download VTT"]').trigger('click')
+
+    expect(wrapper.emitted('download')).toEqual([['item-1', 'vtt']])
+  })
+
+  it('only marks the format being downloaded as busy', () => {
+    const wrapper = mount(UploadListItem, {
+      props: {
+        item: item({
+          status: 'ready',
+          format: 'both',
+          subtitles: { srt: 'http://api.test/s.srt', vtt: 'http://api.test/s.vtt' },
+          downloading: ['vtt'],
+        }),
+      },
+    })
+
+    const srt = wrapper.get('button[aria-label="Download SRT"]')
+    const vtt = wrapper.get('button[aria-label="Download VTT"]')
+    expect(srt.attributes('disabled')).toBeUndefined()
+    expect(vtt.attributes('disabled')).toBeDefined()
+    expect(vtt.text()).toBe('VTT')
+    expect(vtt.find('[data-test="spinner"]').exists()).toBe(true)
   })
 
   it.each([

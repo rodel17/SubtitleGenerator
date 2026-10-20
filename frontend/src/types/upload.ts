@@ -39,7 +39,20 @@ export interface UploadItem {
   format?: SubtitleFormat
   error?: string
   /** Download URL per generated format, once ready */
-  subtitles?: Partial<Record<'srt' | 'vtt', string>>
+  subtitles?: Partial<Record<SubtitleFileFormat, string>>
+  /** Formats whose file is being fetched right now */
+  downloading?: SubtitleFileFormat[]
+  /** Why the last download did not work; the upload itself is still fine */
+  downloadError?: string
+}
+
+/** A format a subtitle file can be downloaded in ("both" produces one of each) */
+export type SubtitleFileFormat = 'srt' | 'vtt'
+
+/** "Team Interview.mp4" + "srt" -> "Team Interview.srt", as the API names the file */
+export function subtitleFileName(mediaName: string, format: SubtitleFileFormat): string {
+  const dot = mediaName.lastIndexOf('.')
+  return `${dot > 0 ? mediaName.slice(0, dot) : mediaName}.${format}`
 }
 
 /** Status of an upload as the Laravel API reports it */
