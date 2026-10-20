@@ -35,6 +35,21 @@ class UploadFactory extends Factory
     }
 
     /**
+     * An upload declared for exactly these bytes, split into $chunkSize pieces.
+     */
+    public function forContent(string $bytes, string $name = 'clip.wav', int $chunkSize = 20): static
+    {
+        return $this->state(fn (): array => [
+            'original_name' => $name,
+            'extension' => strtolower(pathinfo($name, PATHINFO_EXTENSION)),
+            'mime_type' => null,
+            'size' => strlen($bytes),
+            'chunk_size' => $chunkSize,
+            'total_chunks' => (int) ceil(strlen($bytes) / $chunkSize),
+        ]);
+    }
+
+    /**
      * An upload whose chunks have all been received and assembled.
      */
     public function uploaded(): static

@@ -1,5 +1,9 @@
 <?php
 
+use App\Models\Upload;
+use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /*
@@ -14,7 +18,7 @@ use Tests\TestCase;
 */
 
 pest()->extend(TestCase::class)
- // ->use(Illuminate\Foundation\Testing\RefreshDatabase::class)
+    ->use(LazilyRefreshDatabase::class)
     ->in('Feature');
 
 /*
@@ -43,7 +47,45 @@ expect()->extend('toBeOne', function () {
 |
 */
 
-function something()
+/**
+ * Bytes of a tiny but real WAV file, so content-based MIME detection sees audio/x-wav.
+ */
+function wavBytes(int $sampleCount = 30): string
 {
-    // ..
+    return 'RIFF'.pack('V', 36 + $sampleCount).'WAVE'
+        .'fmt '.pack('V', 16).pack('v', 1).pack('v', 1).pack('V', 8000).pack('V', 8000).pack('v', 1).pack('v', 8)
+        .'data'.pack('V', $sampleCount).str_repeat("\x80", $sampleCount);
+}
+
+/**
+ * Bytes of a minimal MPEG transport stream (188-byte packets), detected as video/MP2T.
+ */
+function mpegTsBytes(int $packetCount = 10): string
+{
+    return str_repeat("\x47\x40\x00\x10".str_repeat("\xff", 184), $packetCount);
+}
+
+/**
+ * Send one chunk through the API.
+ */
+function postChunk(Upload $upload, int|string $index, string $bytes): TestResponse
+{
+    return test()->post("/api/uploads/{$upload->id}/chunks", [
+        'index' => $index,
+        'chunk' => UploadedFile::fake()->createWithContent('chunk', $bytes),
+    ], ['Accept' => 'application/json']);
+}
+
+/**
+ * Send every chunk of $bytes through the API, optionally in a custom order of indexes.
+ *
+ * @param  list<int>|null  $order
+ */
+function sendAllChunks(Upload $upload, string $bytes, ?array $order = null): void
+{
+    $chunks = str_split($bytes, $upload->chunk_size);
+
+    foreach ($order ?? array_keys($chunks) as $index) {
+        postChunk($upload, $index, $chunks[$index])->assertNoContent();
+    }
 }
