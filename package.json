@@ -1,0 +1,11 @@
+{
+  "name": "subtitle-generator",
+  "private": true,
+  "description": "Repo-level scripts. Run from the repo root on the host, with the Docker stack up.",
+  "scripts": {
+    "test": "npm run test:backend && npm run test:frontend && npm run test:e2e",
+    "test:backend": "docker compose exec -T app php artisan test --compact",
+    "test:frontend": "cd frontend && npm run test:unit -- --run",
+    "test:e2e": "cd frontend && npx playwright test --project=chromium --reporter=list"
+  }
+}
