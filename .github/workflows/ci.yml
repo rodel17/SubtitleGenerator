@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel an in-progress run when a newer commit lands on the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Pint + Pest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same PHP version and extensions as Docker/php/Dockerfile.
+      # Tests use in-memory SQLite (phpunit.xml), so no Postgres service is needed.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, exif, pcntl, bcmath, gd, zip, pdo_sqlite
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: composer-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Lint (Pint)
+        run: vendor/bin/pint --test
+
+      - name: Tests (Pest)
+        run: php artisan test --compact
+
+  frontend:
+    name: Frontend (lint, type-check, Vitest, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Run linters directly: the npm "lint" scripts use --fix, which would hide errors in CI.
+      - name: Lint (oxlint)
+        run: npx oxlint .
+
+      - name: Lint (ESLint)
+        run: npx eslint .
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Unit tests (Vitest)
+        run: npm run test:unit -- --run
+
+      - name: Build
+        run: npm run build-only
+        env:
+          VITE_API_URL: http://localhost:8000/api
