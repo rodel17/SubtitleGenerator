@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import type { AxiosInstance } from 'axios'
+import { AxiosError, type AxiosInstance } from 'axios'
 
 import { api } from '@/lib/api'
 import { resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
@@ -79,6 +79,7 @@ beforeEach(() => {
   get.mockReset().mockResolvedValue({ data: { data: [] } })
   upload.mockReset().mockResolvedValue(resource())
   resumeUpload.mockReset()
+  vi.mocked(api.delete).mockReset()
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn<typeof URL.createObjectURL>(() => 'blob:x'), revokeObjectURL: vi.fn<typeof URL.revokeObjectURL>() }))
 })
 
@@ -240,16 +241,148 @@ describe('generating subtitles', () => {
     expect(wrapper.text()).not.toContain('Selected')
   })
 
-  it('removes an upload from the list', async () => {
-    get.mockResolvedValue({ data: { data: [resource({ id: 'server-3', status: 'failed', error: 'No speech was detected in this file.' })] } })
+})
+
+describe('deleting an upload', () => {
+  const dialog = (wrapper: Awaited<ReturnType<typeof mountView>>) => wrapper.find('[role="alertdialog"]')
+  const dialogButton = (wrapper: Awaited<ReturnType<typeof mountView>>, name: string) =>
+    dialog(wrapper).findAll('button').find((button) => button.text() === name)!
+
+  async function mountWithReadyUpload() {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-3', name: 'interview.mp4' })] } })
+    const wrapper = await mountView()
+    await wrapper.get('button[aria-label="Delete upload"]').trigger('click')
+    return wrapper
+  }
+
+  it('asks for confirmation before deleting anything', async () => {
+    const wrapper = await mountWithReadyUpload()
+
+    expect(dialog(wrapper).text()).toContain('Delete this upload?')
+    expect(dialog(wrapper).text()).toContain(`"interview.mp4" and its subtitles will be deleted. This can't be undone.`)
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('focuses Cancel so a stray Enter does not delete', async () => {
+    const wrapper = await mountWithReadyUpload()
+    await flushPromises()
+
+    expect(document.activeElement?.textContent?.trim()).toBe('Cancel')
+    expect(wrapper.exists()).toBe(true)
+  })
+
+  it('keeps the upload when cancelled', async () => {
+    const wrapper = await mountWithReadyUpload()
+
+    await dialogButton(wrapper, 'Cancel').trigger('click')
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(api.delete).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('interview.mp4')
+  })
+
+  it('closes on Escape without deleting', async () => {
+    const wrapper = await mountWithReadyUpload()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('shows a spinner on the button while the server deletes, then removes the row', async () => {
+    let finish!: () => void
+    vi.mocked(api.delete).mockReturnValue(new Promise((resolve) => (finish = () => resolve({ data: '' }))))
+    const wrapper = await mountWithReadyUpload()
+
+    await dialogButton(wrapper, 'Delete').trigger('click')
+
+    const busyButton = dialogButton(wrapper, 'Deleting…')
+    expect(busyButton.attributes('disabled')).toBeDefined()
+    expect(busyButton.attributes('aria-busy')).toBe('true')
+    expect(busyButton.find('[data-test="spinner"]').exists()).toBe(true)
+    expect(dialogButton(wrapper, 'Cancel').attributes('disabled')).toBeDefined()
+    expect(api.delete).toHaveBeenCalledWith('/uploads/server-3')
+
+    finish()
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.text()).toContain('No uploads yet.')
+  })
+
+  it('cannot be dismissed while deleting', async () => {
+    vi.mocked(api.delete).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountWithReadyUpload()
+    await dialogButton(wrapper, 'Delete').trigger('click')
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.get('[data-test="confirm-backdrop"]').trigger('click')
+
+    expect(dialog(wrapper).exists()).toBe(true)
+  })
+
+  it('shows the error and keeps the upload when the delete fails, so it can be retried', async () => {
+    vi.mocked(api.delete)
+      .mockRejectedValueOnce(new AxiosError('Network Error', 'ERR_NETWORK'))
+      .mockResolvedValueOnce({ data: '' })
+    const wrapper = await mountWithReadyUpload()
+
+    await dialogButton(wrapper, 'Delete').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).get('[role="alert"]').text()).toBe('Network Error')
+    expect(wrapper.text()).toContain('interview.mp4')
+
+    await dialogButton(wrapper, 'Delete').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No uploads yet.')
+  })
+
+  it('removes a failed upload after confirming', async () => {
+    get.mockResolvedValue({
+      data: { data: [resource({ id: 'server-4', status: 'failed', error: 'No speech was detected in this file.' })] },
+    })
     vi.mocked(api.delete).mockResolvedValue({ data: '' })
     const wrapper = await mountView()
 
     await wrapper.findAll('button').find((button) => button.text() === 'Remove')!.trigger('click')
+    await dialogButton(wrapper, 'Delete').trigger('click')
     await flushPromises()
 
-    expect(api.delete).toHaveBeenCalledWith('/uploads/server-3')
+    expect(api.delete).toHaveBeenCalledWith('/uploads/server-4')
     expect(wrapper.text()).toContain('No uploads yet.')
+  })
+
+  it('asks to stop an upload that is still sending', async () => {
+    upload.mockImplementation((_file, options) => {
+      options.onStarted?.(resource({ id: 'server-7', status: 'uploading' }))
+      return new Promise(() => {})
+    })
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('clip.mp4')])
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="Cancel upload"]').trigger('click')
+
+    expect(dialog(wrapper).text()).toContain('Stop this upload?')
+    expect(dialogButton(wrapper, 'Keep uploading').exists()).toBe(true)
+    expect(dialogButton(wrapper, 'Stop upload').exists()).toBe(true)
+  })
+
+  it('removes a file that never reached the server without asking', async () => {
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('notes.txt')])
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Remove')!.trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('notes.txt')
+    expect(api.delete).not.toHaveBeenCalled()
   })
 })
 

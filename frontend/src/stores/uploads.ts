@@ -3,11 +3,14 @@ import { defineStore } from 'pinia'
 import { isAxiosError } from 'axios'
 import { api, errorMessage } from '@/lib/api'
 import { isRetryable, resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
+import { saveBlob } from '@/lib/download'
 import { formatBytes } from '@/lib/format'
 import {
   mediaKindOf,
   SERVER_PROCESSING_STATUSES,
+  subtitleFileName,
   type ServerUploadStatus,
+  type SubtitleFileFormat,
   type SubtitleFormat,
   type UploadItem,
   type UploadResource,
@@ -254,22 +257,56 @@ export const useUploadsStore = defineStore('uploads', () => {
     )
   }
 
-  /** Cancel an in-flight upload (if any) and delete it everywhere. */
+  /** Fetch a subtitle file and save it, marking the format as downloading meanwhile. */
+  async function download(id: string, format: SubtitleFileFormat) {
+    const item = items.value.find((candidate) => candidate.id === id)
+    const url = item?.subtitles?.[format]
+    if (!item || !url || item.downloading?.includes(format)) return
+
+    item.downloading = [...(item.downloading ?? []), format]
+    item.downloadError = undefined
+
+    try {
+      const { data } = await api.get<Blob>(url, { responseType: 'blob' })
+      saveBlob(data, subtitleFileName(item.name, format))
+    } catch {
+      // The error body is a Blob here, so there is no server message to show
+      item.downloadError = `The ${format.toUpperCase()} file could not be downloaded. Please try again.`
+    } finally {
+      item.downloading = item.downloading.filter((candidate) => candidate !== format)
+    }
+  }
+
+  /**
+   * Cancel an in-flight upload (if any) and delete it everywhere. Resolves once
+   * the server has deleted it; rejects with a readable message when it could not,
+   * leaving the row in place so the user can try again.
+   */
   async function remove(id: string) {
     const item = items.value.find((candidate) => candidate.id === id)
     if (!item) return
 
+    const wasUploading = controllers.has(id)
     controllers.get(id)?.abort()
-    pendingFiles.delete(id)
-    items.value = items.value.filter((candidate) => candidate.id !== id)
 
     if (item.serverId) {
       try {
         await api.delete(`/uploads/${item.serverId}`)
-      } catch {
-        // Already gone, or the server is unreachable; abandoned uploads are pruned server-side
+      } catch (error) {
+        // 404: it is already gone, which is what the user wanted
+        if (!(isAxiosError(error) && error.response?.status === 404)) {
+          if (wasUploading) {
+            // The upload loop stopped; the kept File lets the user resume instead
+            item.status = 'interrupted'
+            item.error = INTERRUPTED_MESSAGE
+          }
+          throw new Error(errorMessage(error, 'Could not delete the upload. Please try again.'))
+        }
       }
     }
+
+    pendingFiles.delete(id)
+    items.value = items.value.filter((candidate) => candidate.id !== id)
   }
 
   return {
@@ -282,6 +319,7 @@ export const useUploadsStore = defineStore('uploads', () => {
     addRejected,
     hasFileFor,
     resume,
+    download,
     remove,
   }
 })
