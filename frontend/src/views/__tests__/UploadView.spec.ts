@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { AxiosInstance } from 'axios'
 
 import { api } from '@/lib/api'
-import { uploadInChunks } from '@/services/chunkedUpload'
+import { resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
 import { useUploadsStore } from '@/stores/uploads'
 import type { UploadResource } from '@/types/upload'
 import UploadView from '../UploadView.vue'
@@ -13,10 +13,15 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   api: { get: vi.fn<AxiosInstance['get']>(), delete: vi.fn<AxiosInstance['delete']>() },
 }))
-vi.mock('@/services/chunkedUpload', () => ({ uploadInChunks: vi.fn<typeof uploadInChunks>() }))
+vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/chunkedUpload')>()),
+  uploadInChunks: vi.fn<typeof uploadInChunks>(),
+  resumeInChunks: vi.fn<typeof resumeInChunks>(),
+}))
 
 const get = vi.mocked(api.get)
 const upload = vi.mocked(uploadInChunks)
+const resumeUpload = vi.mocked(resumeInChunks)
 
 // Each mounted view registers a window listener; unmount so tests don't leak into each other
 enableAutoUnmount(afterEach)
@@ -27,12 +32,15 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     name: 'product-demo.mov',
     extension: 'mov',
     mime_type: 'video/quicktime',
+    last_modified: null,
+    progress: null,
+    error: null,
     size: 2048,
     chunk_size: 20,
     total_chunks: 103,
     language: 'en',
     subtitle_format: 'srt',
-    status: 'uploaded',
+    status: 'ready',
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
     ...overrides,
@@ -70,6 +78,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   get.mockReset().mockResolvedValue({ data: { data: [] } })
   upload.mockReset().mockResolvedValue(resource())
+  resumeUpload.mockReset()
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn<typeof URL.createObjectURL>(() => 'blob:x'), revokeObjectURL: vi.fn<typeof URL.revokeObjectURL>() }))
 })
 
@@ -86,7 +95,7 @@ describe('recent uploads', () => {
 
     expect(get).toHaveBeenCalledWith('/uploads')
     expect(wrapper.text()).toContain('product-demo.mov')
-    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Uploaded · English · SRT · 2.0 KB')
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Ready · English · SRT · 2.0 KB')
   })
 
   it('does not reload when the list already has items', async () => {
@@ -209,7 +218,7 @@ describe('generating subtitles', () => {
     await flushPromises()
 
     expect(upload).toHaveBeenCalledWith(clip, expect.objectContaining({ language: 'ja', format: 'vtt' }))
-    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Uploaded · Japanese · VTT · 10 B')
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Ready · Japanese · VTT · 10 B')
   })
 
   it('defaults to auto-detect and SRT', async () => {
@@ -232,7 +241,7 @@ describe('generating subtitles', () => {
   })
 
   it('removes an upload from the list', async () => {
-    get.mockResolvedValue({ data: { data: [resource({ id: 'server-3' })] } })
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-3', status: 'failed', error: 'No speech was detected in this file.' })] } })
     vi.mocked(api.delete).mockResolvedValue({ data: '' })
     const wrapper = await mountView()
 
@@ -241,6 +250,49 @@ describe('generating subtitles', () => {
 
     expect(api.delete).toHaveBeenCalledWith('/uploads/server-3')
     expect(wrapper.text()).toContain('No uploads yet.')
+  })
+})
+
+describe('resuming an interrupted upload', () => {
+  const resumeButton = (wrapper: Awaited<ReturnType<typeof mountView>>) =>
+    wrapper.findAll('button').find((button) => button.text() === 'Resume')!
+
+  async function pickToResume(wrapper: Awaited<ReturnType<typeof mountView>>, file: File) {
+    const picker = wrapper.get('[data-test="resume-picker"]')
+    Object.defineProperty(picker.element, 'files', { value: [file], configurable: true })
+    await picker.trigger('change')
+    await flushPromises()
+  }
+
+  it('asks for the file after a reload, then resumes on the same server upload', async () => {
+    get.mockResolvedValue({
+      data: { data: [resource({ id: 'server-5', name: 'clip.mp4', size: 10, status: 'uploading' })] },
+    })
+    resumeUpload.mockResolvedValue(resource({ id: 'server-5', name: 'clip.mp4', size: 10 }))
+    const wrapper = await mountView()
+    const picker = wrapper.get<HTMLInputElement>('[data-test="resume-picker"]').element
+    const click = vi.spyOn(picker, 'click')
+
+    await resumeButton(wrapper).trigger('click')
+    expect(click).toHaveBeenCalled()
+    const picked = fileOf('clip.mp4')
+    await pickToResume(wrapper, picked)
+
+    expect(resumeUpload).toHaveBeenCalledWith(picked, 'server-5', expect.anything())
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Ready · English · SRT · 10 B')
+  })
+
+  it('explains which file to pick when the user picks a different one', async () => {
+    get.mockResolvedValue({
+      data: { data: [resource({ id: 'server-5', name: 'clip.mp4', size: 10, status: 'uploading' })] },
+    })
+    const wrapper = await mountView()
+
+    await resumeButton(wrapper).trigger('click')
+    await pickToResume(wrapper, fileOf('other.mp4'))
+
+    expect(resumeUpload).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('That is a different file. Choose "clip.mp4" (10 B) to resume.')
   })
 })
 

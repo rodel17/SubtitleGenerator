@@ -68,7 +68,9 @@ return [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
+            // Must exceed the longest job timeout (TranscribeAudio: 3600s), or a
+            // running job is handed to a second worker. See config/horizon.php.
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 3720),
             'block_for' => null,
             'after_commit' => false,
         ],

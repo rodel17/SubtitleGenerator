@@ -3,11 +3,14 @@ import { AxiosError, AxiosHeaders, CanceledError, type AxiosInstance, type Axios
 
 import { api } from '@/lib/api'
 import type { UploadResource } from '@/types/upload'
-import { chunkRanges, uploadInChunks, type ChunkedUploadOptions } from '../chunkedUpload'
+import { chunkRanges, resumeInChunks, uploadInChunks, type ChunkedUploadOptions } from '../chunkedUpload'
 
-vi.mock('@/lib/api', () => ({ api: { post: vi.fn<AxiosInstance['post']>() } }))
+vi.mock('@/lib/api', () => ({
+  api: { post: vi.fn<AxiosInstance['post']>(), get: vi.fn<AxiosInstance['get']>() },
+}))
 
 const post = vi.mocked(api.post)
+const get = vi.mocked(api.get)
 
 function resource(overrides: Partial<UploadResource> = {}): UploadResource {
   return {
@@ -15,6 +18,9 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     name: 'clip.wav',
     extension: 'wav',
     mime_type: null,
+    last_modified: null,
+    progress: null,
+    error: null,
     size: 45,
     chunk_size: 20,
     total_chunks: 3,
@@ -70,6 +76,7 @@ function chunkCalls() {
 
 beforeEach(() => {
   post.mockReset()
+  get.mockReset()
 })
 
 afterEach(() => {
@@ -102,12 +109,21 @@ describe('uploadInChunks', () => {
   it('starts the upload with the file details', async () => {
     routeRequests()
 
-    await uploadInChunks(fileOf(45), options({ language: 'ja', format: 'vtt' }))
+    const file = fileOf(45)
+
+    await uploadInChunks(file, options({ language: 'ja', format: 'vtt' }))
 
     expect(post).toHaveBeenNthCalledWith(
       1,
       '/uploads',
-      { name: 'clip.wav', size: 45, mime_type: 'audio/wav', language: 'ja', subtitle_format: 'vtt' },
+      {
+        name: 'clip.wav',
+        size: 45,
+        mime_type: 'audio/wav',
+        last_modified: file.lastModified,
+        language: 'ja',
+        subtitle_format: 'vtt',
+      },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
@@ -360,5 +376,82 @@ describe('uploadInChunks', () => {
     await expect(uploadInChunks(fileOf(45), options())).rejects.toMatchObject({
       response: { status: 422 },
     })
+  })
+})
+
+describe('resumeInChunks', () => {
+  function serverHas(received: number[], chunkSize = 20) {
+    get.mockResolvedValue({ data: { data: { chunk_size: chunkSize, total_chunks: 3, received } } })
+  }
+
+  it('asks the server which chunks it already has', async () => {
+    serverHas([])
+    routeRequests()
+
+    await resumeInChunks(fileOf(45), 'upload-7', options())
+
+    expect(get).toHaveBeenCalledWith('/uploads/upload-7/chunks', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+
+  it('sends only the missing chunks, with the bytes of the original file', async () => {
+    serverHas([0, 2])
+    routeRequests()
+    const file = fileOf(45)
+
+    await resumeInChunks(file, 'upload-7', options())
+
+    const sent = chunkCalls()
+    expect(sent.map(([url]) => url)).toEqual(['/uploads/upload-7/chunks'])
+    const form = sent[0]![1] as FormData
+    expect(form.get('index')).toBe('1')
+    expect(await (form.get('chunk') as Blob).text()).toBe(await file.slice(20, 40).text())
+  })
+
+  it('never starts a new upload', async () => {
+    serverHas([0])
+    routeRequests()
+
+    await resumeInChunks(fileOf(45), 'upload-7', options())
+
+    expect(post.mock.calls.some(([url]) => url === '/uploads')).toBe(false)
+  })
+
+  it('starts the progress from what the server already has', async () => {
+    serverHas([0, 1])
+    routeRequests()
+    const progress: number[] = []
+
+    await resumeInChunks(fileOf(45), 'upload-7', options({ onProgress: (percent) => progress.push(percent) }))
+
+    expect(progress[0]).toBe(88) // 40 of 45 bytes already on the server
+    expect(progress[progress.length - 1]).toBe(100)
+  })
+
+  it('goes straight to completion when every chunk already arrived', async () => {
+    serverHas([0, 1, 2])
+    routeRequests()
+
+    const result = await resumeInChunks(fileOf(45), 'upload-7', options())
+
+    expect(chunkCalls()).toHaveLength(0)
+    expect(post).toHaveBeenLastCalledWith('/uploads/upload-7/completion', null, expect.anything())
+    expect(result.status).toBe('uploaded')
+  })
+
+  it('splits the file with the chunk size the upload was started with', async () => {
+    serverHas([], 15)
+    routeRequests()
+
+    await resumeInChunks(fileOf(45), 'upload-7', options())
+
+    expect(chunkCalls().map(([, body]) => ((body as FormData).get('chunk') as Blob).size)).toEqual([15, 15, 15])
+  })
+
+  it('rejects without sending chunks when the server no longer accepts them', async () => {
+    get.mockRejectedValue(httpError(409, { message: 'This upload is already complete.' }))
+    routeRequests()
+
+    await expect(resumeInChunks(fileOf(45), 'upload-7', options())).rejects.toThrow('409')
+    expect(post).not.toHaveBeenCalled()
   })
 })

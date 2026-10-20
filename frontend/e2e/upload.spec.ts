@@ -9,8 +9,9 @@ test.beforeEach(async ({ page }) => {
   await api.install()
 })
 
+/** The drop zone's input; the page also has a hidden one for picking a file to resume */
 function fileInput(page: Page) {
-  return page.locator('input[type="file"]')
+  return page.locator('input[type="file"]:not([data-test="resume-picker"])')
 }
 
 function uploadsList(page: Page) {
@@ -30,8 +31,23 @@ test.describe('recent uploads', () => {
 
     await page.goto('/')
 
-    await expect(uploadsList(page).getByText('Uploaded · Japanese · VTT · 1.2 MB')).toBeVisible()
-    await expect(uploadsList(page).getByText('Upload was interrupted. Remove it and try again.')).toBeVisible()
+    await expect(uploadsList(page).getByText('Ready · Japanese · VTT · 1.2 MB')).toBeVisible()
+    await expect(uploadsList(page).getByText('Upload was interrupted. Resume to continue where it stopped.')).toBeVisible()
+  })
+
+  test('links a ready upload to its subtitle file', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'done', subtitle_format: 'both' })]
+
+    await page.goto('/')
+
+    await expect(uploadsList(page).getByRole('link', { name: 'SRT' })).toHaveAttribute(
+      'href',
+      'http://localhost:8000/api/uploads/done/subtitles/srt',
+    )
+    await expect(uploadsList(page).getByRole('link', { name: 'VTT' })).toHaveAttribute(
+      'href',
+      'http://localhost:8000/api/uploads/done/subtitles/vtt',
+    )
   })
 
   test('shows the empty state when there are no uploads', async ({ page }) => {
@@ -49,7 +65,7 @@ test.describe('recent uploads', () => {
   })
 
   test('removes an upload from the list and the server', async ({ page }) => {
-    api.uploads = [fakeUpload({ id: 'gone' })]
+    api.uploads = [fakeUpload({ id: 'gone', status: 'failed', error: 'No speech was detected in this file.' })]
     await page.goto('/')
 
     await uploadsList(page).getByRole('button', { name: 'Remove' }).click()
@@ -125,9 +141,21 @@ test.describe('uploading', () => {
 
     await page.getByRole('button', { name: 'Generate subtitles' }).click()
 
-    await expect(uploadsList(page).getByText('Uploaded · Japanese · VTT · 7.9 KB')).toBeVisible()
+    await expect(uploadsList(page).getByText('Transcribing · 50%')).toBeVisible()
+    await expect(uploadsList(page).getByText('Ready · Japanese · VTT · 7.9 KB')).toBeVisible()
+    await expect(uploadsList(page).getByRole('link', { name: 'Download' })).toHaveAttribute(
+      'href',
+      'http://localhost:8000/api/uploads/upload-1/subtitles/vtt',
+    )
     expect(api.startRequests).toEqual([
-      { name: 'interview.wav', size: 8044, mime_type: 'audio/wav', language: 'ja', subtitle_format: 'vtt' },
+      {
+        name: 'interview.wav',
+        size: 8044,
+        mime_type: 'audio/wav',
+        last_modified: expect.any(Number),
+        language: 'ja',
+        subtitle_format: 'vtt',
+      },
     ])
     expect(api.chunkIndexes.toSorted()).toEqual([0, 1])
     expect(api.completions).toEqual(['upload-1'])
@@ -171,7 +199,7 @@ test.describe('uploading', () => {
 
     await page.getByRole('button', { name: 'Generate subtitles' }).click()
 
-    await expect(uploadsList(page).getByText('Uploaded ·')).toBeVisible()
+    await expect(uploadsList(page).getByText('Ready ·')).toBeVisible({ timeout: 10_000 })
     expect(api.chunkIndexes).toHaveLength(3)
     expect([...new Set(api.chunkIndexes)].toSorted()).toEqual([0, 1])
   })
@@ -198,8 +226,48 @@ test.describe('uploading', () => {
 
     await page.getByRole('button', { name: 'Generate subtitles' }).click()
 
-    await expect(uploadsList(page).getByText('Uploaded ·')).toHaveCount(2)
+    await expect(uploadsList(page).getByText('Ready ·')).toHaveCount(2, { timeout: 10_000 })
     expect(api.startRequests.map((request) => request.name)).toEqual(['first.wav', 'second.wav'])
+  })
+
+  test('resumes an upload interrupted before a reload, sending only the missing chunks', async ({ page }) => {
+    const file = { name: 'interview.wav', mimeType: 'audio/wav', buffer: wavBuffer(1) } // 2 chunks
+    api.uploads = [
+      fakeUpload({
+        id: 'half-done',
+        name: 'interview.wav',
+        size: file.buffer.length,
+        chunk_size: api.chunkSize,
+        total_chunks: 2,
+        status: 'uploading',
+        completed_at: null,
+      }),
+    ]
+    api.receivedChunks['half-done'] = [0]
+    await page.goto('/')
+
+    const chooser = page.waitForEvent('filechooser')
+    await uploadsList(page).getByRole('button', { name: 'Resume' }).click()
+    await (await chooser).setFiles(file)
+
+    await expect(uploadsList(page).getByText('Ready ·')).toBeVisible({ timeout: 10_000 })
+    expect(api.chunkIndexes).toEqual([1])
+    expect(api.startRequests).toHaveLength(0)
+    expect(api.completions).toEqual(['half-done'])
+  })
+
+  test('refuses to resume with a different file', async ({ page }) => {
+    api.uploads = [
+      fakeUpload({ id: 'half-done', name: 'interview.wav', size: 8044, status: 'uploading', completed_at: null }),
+    ]
+    await page.goto('/')
+
+    const chooser = page.waitForEvent('filechooser')
+    await uploadsList(page).getByRole('button', { name: 'Resume' }).click()
+    await (await chooser).setFiles({ name: 'other.wav', mimeType: 'audio/wav', buffer: wavBuffer(1) })
+
+    await expect(uploadsList(page).getByText('That is a different file. Choose "interview.wav" (7.9 KB) to resume.')).toBeVisible()
+    expect(api.chunkIndexes).toHaveLength(0)
   })
 
   test('asks before leaving the page while an upload is running', async ({ page }) => {

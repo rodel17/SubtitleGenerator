@@ -115,3 +115,57 @@ it('returns 404 for an unknown upload', function () {
 
     $response->assertNotFound();
 });
+
+describe('index', function () {
+    it('lists the chunks already received, so an interrupted upload can resume', function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        postChunk($upload, 2, str_repeat('c', 5));
+        postChunk($upload, 0, str_repeat('a', 20));
+
+        $response = $this->getJson("/api/uploads/{$upload->id}/chunks");
+
+        $response->assertOk()->assertExactJson(['data' => [
+            'chunk_size' => 20,
+            'total_chunks' => 3,
+            'received' => [0, 2],
+        ]]);
+    });
+
+    it('leaves out a stored chunk with the wrong size, so the client sends it again', function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        postChunk($upload, 0, str_repeat('a', 20));
+        Storage::disk('local')->put("chunks/{$upload->id}/1", 'truncated');
+
+        $this->getJson("/api/uploads/{$upload->id}/chunks")->assertJsonPath('data.received', [0]);
+    });
+
+    it('ignores files that are not chunks of this upload', function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        Storage::disk('local')->put("chunks/{$upload->id}/notes", str_repeat('a', 20));
+        Storage::disk('local')->put("chunks/{$upload->id}/3", str_repeat('a', 20));
+
+        $this->getJson("/api/uploads/{$upload->id}/chunks")->assertJsonPath('data.received', []);
+    });
+
+    it('returns an empty list before any chunk arrives', function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+
+        $this->getJson("/api/uploads/{$upload->id}/chunks")->assertJsonPath('data.received', []);
+    });
+
+    it('returns 409 once the upload is complete', function () {
+        $upload = Upload::factory()->uploaded()->create();
+
+        $this->getJson("/api/uploads/{$upload->id}/chunks")
+            ->assertConflict()
+            ->assertJsonPath('message', 'This upload is already complete.');
+    });
+
+    it('returns 404 for an unknown upload', function () {
+        $this->getJson('/api/uploads/01a15979-96db-7264-a6ec-88c51a111e09/chunks')->assertNotFound();
+    });
+});

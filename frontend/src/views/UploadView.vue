@@ -59,6 +59,30 @@ function generate() {
   selectedFiles.value = []
 }
 
+// After a reload the browser no longer has the file, so the user picks it again
+const resumePicker = ref<HTMLInputElement | null>(null)
+const resumingId = ref<string | null>(null)
+
+function resume(id: string) {
+  if (uploads.hasFileFor(id)) {
+    uploads.resume(id)
+    return
+  }
+
+  resumingId.value = id
+  resumePicker.value?.click()
+}
+
+function resumeWithPickedFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+
+  if (file && resumingId.value) uploads.resume(resumingId.value, file)
+
+  resumingId.value = null
+  input.value = ''
+}
+
 // Leaving the page would kill in-flight uploads, so ask first
 function warnBeforeLeaving(event: BeforeUnloadEvent) {
   if (uploads.hasActiveUploads) event.preventDefault()
@@ -161,6 +185,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
           :item="item"
           @cancel="uploads.remove"
           @remove="uploads.remove"
+          @resume="resume"
         />
       </ul>
       <p
@@ -172,6 +197,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
           uploads.isLoading ? 'Loading uploads…' : (uploads.loadError ?? 'No uploads yet.')
         }}
       </p>
+      <input
+        ref="resumePicker"
+        type="file"
+        class="hidden"
+        aria-label="Choose the file to resume"
+        data-test="resume-picker"
+        @change="resumeWithPickedFile"
+      />
     </section>
   </main>
 </template>

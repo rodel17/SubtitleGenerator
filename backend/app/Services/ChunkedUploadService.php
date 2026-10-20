@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Enums\UploadStatus;
+use App\Jobs\AssembleUpload;
 use App\Models\Upload;
 use finfo;
 use Illuminate\Contracts\Filesystem\Filesystem;
@@ -14,9 +15,15 @@ use RuntimeException;
 class ChunkedUploadService
 {
     /**
+     * Bytes read from the start of the file to detect its type. Media signatures
+     * sit in the first few kilobytes; libmagic itself reads no more than this.
+     */
+    private const SNIFF_BYTES = 1024 * 1024;
+
+    /**
      * Start a chunked upload for a file the client is about to send.
      *
-     * @param  array{name: string, size: int, mime_type?: string|null, language?: string|null, subtitle_format: string}  $attributes
+     * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, subtitle_format: string}  $attributes
      */
     public function start(array $attributes): Upload
     {
@@ -26,6 +33,7 @@ class ChunkedUploadService
             'original_name' => $attributes['name'],
             'extension' => strtolower(pathinfo($attributes['name'], PATHINFO_EXTENSION)),
             'mime_type' => $attributes['mime_type'] ?? null,
+            'last_modified' => $attributes['last_modified'] ?? null,
             'size' => $attributes['size'],
             'chunk_size' => $chunkSize,
             'total_chunks' => (int) ceil($attributes['size'] / $chunkSize),
@@ -44,7 +52,37 @@ class ChunkedUploadService
     }
 
     /**
-     * Join every chunk into the final media file and mark the upload complete.
+     * Indexes of the chunks already stored with their expected size. A client
+     * resuming an interrupted upload only needs to send the others.
+     *
+     * @return list<int>
+     */
+    public function receivedChunkIndexes(Upload $upload): array
+    {
+        $disk = $this->disk();
+        $received = [];
+
+        foreach ($disk->files($this->chunkDirectory($upload)) as $file) {
+            $index = basename($file);
+
+            if (! ctype_digit($index) || (int) $index >= $upload->total_chunks) {
+                continue;
+            }
+
+            if ($disk->size($file) === $upload->expectedChunkSize((int) $index)) {
+                $received[] = (int) $index;
+            }
+        }
+
+        sort($received);
+
+        return $received;
+    }
+
+    /**
+     * Check that every chunk arrived and the content is media, then queue the
+     * (slow) assembly. Everything checked here only reads chunk sizes and the
+     * first megabyte, so the request returns quickly even for large files.
      *
      * @throws ValidationException
      */
@@ -58,49 +96,97 @@ class ChunkedUploadService
             ]);
         }
 
-        $path = "uploads/{$upload->id}.{$upload->extension}";
-        $this->assemble($upload, $path);
-
-        $disk = $this->disk();
-
-        if ($disk->size($path) !== $upload->size) {
-            $disk->delete($path);
-
+        if ($this->storedChunkBytes($upload) !== $upload->size) {
             throw ValidationException::withMessages([
                 'chunks' => 'The assembled file size does not match the declared size.',
             ]);
         }
 
-        $mimeType = $this->detectMimeType($disk->path($path));
+        $mimeType = (new finfo(FILEINFO_MIME_TYPE))->buffer($this->leadingBytes($upload)) ?: null;
 
         if (! $this->isMediaMimeType($mimeType)) {
-            $disk->delete($path);
-
             throw ValidationException::withMessages([
                 'file' => 'The file is not a supported video or audio file.',
             ]);
         }
 
-        $disk->deleteDirectory($this->chunkDirectory($upload));
+        // Claim the upload atomically so two completion requests cannot both queue it
+        $claimed = Upload::query()
+            ->whereKey($upload->id)
+            ->where('status', UploadStatus::Uploading)
+            ->update(['status' => UploadStatus::Assembling, 'mime_type' => $mimeType]);
 
-        $upload->update([
-            'path' => $path,
-            'mime_type' => $mimeType,
-            'status' => UploadStatus::Uploaded,
-            'completed_at' => now(),
-        ]);
+        abort_if($claimed === 0, 409, 'This upload is already complete.');
+
+        $upload->refresh()->reportProgress(0);
+        AssembleUpload::dispatch($upload);
 
         return $upload;
     }
 
     /**
-     * Delete the upload's chunks and assembled file, if any.
+     * Join every chunk into the final media file and delete the chunks.
+     * Runs in the AssembleUpload job.
+     *
+     * @param  (callable(int $percent): void)|null  $onProgress
+     */
+    public function assemble(Upload $upload, ?callable $onProgress = null): void
+    {
+        $disk = $this->disk();
+        $path = "uploads/{$upload->id}.{$upload->extension}";
+        $disk->makeDirectory(dirname($path));
+
+        $output = fopen($disk->path($path), 'wb');
+
+        if ($output === false) {
+            throw new RuntimeException("Unable to open [{$path}] for writing.");
+        }
+
+        try {
+            for ($index = 0; $index < $upload->total_chunks; $index++) {
+                $input = $disk->readStream("{$this->chunkDirectory($upload)}/{$index}");
+
+                if ($input === null) {
+                    throw new RuntimeException("Chunk {$index} of upload [{$upload->id}] is missing.");
+                }
+
+                stream_copy_to_stream($input, $output);
+                fclose($input);
+
+                if ($onProgress !== null) {
+                    $onProgress((int) floor(($index + 1) / $upload->total_chunks * 100));
+                }
+            }
+        } finally {
+            fclose($output);
+        }
+
+        if ($disk->size($path) !== $upload->size) {
+            $disk->delete($path);
+
+            throw new RuntimeException("Assembled file [{$path}] does not match the declared size.");
+        }
+
+        $disk->deleteDirectory($this->chunkDirectory($upload));
+
+        $upload->update(['path' => $path, 'completed_at' => now()]);
+        $upload->transitionTo(UploadStatus::Uploaded);
+    }
+
+    /**
+     * Delete everything stored for the upload: chunks, media, audio, transcript and subtitles.
      */
     public function deleteFiles(Upload $upload): void
     {
         $disk = $this->disk();
 
         $disk->deleteDirectory($this->chunkDirectory($upload));
+        $disk->deleteDirectory($upload->audioDirectory());
+        $disk->delete([
+            $upload->transcriptPath(),
+            $upload->subtitlePath('srt'),
+            $upload->subtitlePath('vtt'),
+        ]);
 
         if ($upload->path !== null) {
             $disk->delete($upload->path);
@@ -125,38 +211,35 @@ class ChunkedUploadService
         return $missing;
     }
 
-    /**
-     * Stream the chunks in order into one file so memory use stays at one buffer.
-     */
-    private function assemble(Upload $upload, string $path): void
+    private function storedChunkBytes(Upload $upload): int
     {
         $disk = $this->disk();
-        $disk->makeDirectory(dirname($path));
+        $total = 0;
 
-        $output = fopen($disk->path($path), 'wb');
-
-        if ($output === false) {
-            throw new RuntimeException("Unable to open [{$path}] for writing.");
+        for ($index = 0; $index < $upload->total_chunks; $index++) {
+            $total += $disk->size("{$this->chunkDirectory($upload)}/{$index}");
         }
 
-        try {
-            for ($index = 0; $index < $upload->total_chunks; $index++) {
-                $input = $disk->readStream("{$this->chunkDirectory($upload)}/{$index}");
-                stream_copy_to_stream($input, $output);
-                fclose($input);
-            }
-        } finally {
-            fclose($output);
-        }
+        return $total;
     }
 
     /**
-     * Detect the type from the file's bytes only. The disk's own detector falls
-     * back to the extension, which would let a renamed non-media file through.
+     * The first SNIFF_BYTES of the file, read across chunks in order. Type
+     * detection uses the bytes only: the disk's own detector falls back to the
+     * extension, which would let a renamed non-media file through.
      */
-    private function detectMimeType(string $absolutePath): ?string
+    private function leadingBytes(Upload $upload): string
     {
-        return (new finfo(FILEINFO_MIME_TYPE))->file($absolutePath) ?: null;
+        $disk = $this->disk();
+        $bytes = '';
+
+        for ($index = 0; $index < $upload->total_chunks && strlen($bytes) < self::SNIFF_BYTES; $index++) {
+            $input = $disk->readStream("{$this->chunkDirectory($upload)}/{$index}");
+            $bytes .= stream_get_contents($input, self::SNIFF_BYTES - strlen($bytes));
+            fclose($input);
+        }
+
+        return $bytes;
     }
 
     private function isMediaMimeType(?string $mimeType): bool

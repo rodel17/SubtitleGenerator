@@ -3,13 +3,24 @@ export type SubtitleFormat = 'srt' | 'vtt' | 'both'
 export type UploadStatus =
   | 'queued'
   | 'uploading'
+  /** Stopped part-way; the server keeps the chunks it has, so it can be resumed */
+  | 'interrupted'
+  /** The server is joining the chunks into one file */
   | 'processing'
+  /** File is complete and waiting for a transcription worker */
   | 'uploaded'
   | 'transcribing'
   | 'ready'
   | 'failed'
 
 export type MediaKind = 'video' | 'audio'
+
+/** Statuses the server is still working through; the store polls these */
+export const SERVER_PROCESSING_STATUSES: readonly UploadStatus[] = [
+  'processing',
+  'uploaded',
+  'transcribing',
+]
 
 export interface UploadItem {
   /** Client-side id; stays stable while the server id is still unknown */
@@ -19,13 +30,26 @@ export interface UploadItem {
   name: string
   kind: MediaKind
   size: number
+  /** `File.lastModified` as reported to the server; used to check a file picked to resume */
+  lastModified?: number
   status: UploadStatus
-  /** 0–100, only meaningful while uploading */
+  /** 0–100 while uploading, processing or transcribing */
   progress?: number
   language?: string
   format?: SubtitleFormat
   error?: string
+  /** Download URL per generated format, once ready */
+  subtitles?: Partial<Record<'srt' | 'vtt', string>>
 }
+
+/** Status of an upload as the Laravel API reports it */
+export type ServerUploadStatus =
+  | 'uploading'
+  | 'assembling'
+  | 'uploaded'
+  | 'transcribing'
+  | 'ready'
+  | 'failed'
 
 /** Shape of `UploadResource` returned by the Laravel API */
 export interface UploadResource {
@@ -33,12 +57,18 @@ export interface UploadResource {
   name: string
   extension: string
   mime_type: string | null
+  last_modified: number | null
   size: number
   chunk_size: number
   total_chunks: number
   language: string | null
   subtitle_format: SubtitleFormat
-  status: 'uploading' | 'uploaded'
+  status: ServerUploadStatus
+  /** 0–100 while the server is assembling or transcribing, otherwise null */
+  progress: number | null
+  error: string | null
+  /** Download URLs, only once the upload is ready */
+  subtitles?: Partial<Record<'srt' | 'vtt', string>>
   created_at: string
   completed_at: string | null
 }
