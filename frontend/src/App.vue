@@ -1,5 +1,7 @@
 <script setup lang="ts">
   import axios from 'axios'
+  import { RouterView } from 'vue-router'
+  import AppHeader from '@/components/AppHeader.vue'
 
   interface TestResponse {
     message: string
@@ -13,9 +15,8 @@
 </script>
 
 <template>
-  Template
+  <div class="min-h-screen">
+    <AppHeader />
+    <RouterView />
+  </div>
 </template>
-
-<style scoped>
-
-</style>
