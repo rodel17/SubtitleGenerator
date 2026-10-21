@@ -12,6 +12,7 @@ import {
   isAcceptedFile,
   LANGUAGES,
   MAX_FILE_SIZE,
+  MEDIA_RETENTION_HOURS,
   type SubtitleFormat,
   type UploadItem,
 } from '@/types/upload'
@@ -214,7 +215,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
         class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5"
       >
         <span class="text-[13px] text-slate-600">
-          Files are processed privately and deleted after [RETENTION PERIOD].
+          Files are processed privately. Original media is deleted {{ MEDIA_RETENTION_HOURS }} hours
+          after processing; subtitles stay until you delete them.
         </span>
         <div class="flex gap-2.5">
           <button

@@ -194,6 +194,20 @@ class ChunkedUploadService
     }
 
     /**
+     * Delete the original media file but keep the transcript and subtitles.
+     * A null `path` afterwards means the media is gone.
+     */
+    public function deleteMedia(Upload $upload): void
+    {
+        if ($upload->path === null) {
+            return;
+        }
+
+        $this->disk()->delete($upload->path);
+        $upload->update(['path' => null]);
+    }
+
+    /**
      * @return list<int>
      */
     private function missingChunkIndexes(Upload $upload): array

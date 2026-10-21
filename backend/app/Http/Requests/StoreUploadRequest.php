@@ -68,7 +68,19 @@ class StoreUploadRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'size.max' => 'The file is larger than the '.round(config('uploads.max_size') / 1024 ** 3, 1).' GB limit.',
+            'size.max' => 'The file is larger than the '.$this->maxSizeLabel().' limit.',
         ];
+    }
+
+    /**
+     * The upload limit for messages, e.g. "500 MB" or "2 GB".
+     */
+    private function maxSizeLabel(): string
+    {
+        $bytes = config('uploads.max_size');
+
+        return $bytes >= 1024 ** 3
+            ? round($bytes / 1024 ** 3, 1).' GB'
+            : round($bytes / 1024 ** 2, 1).' MB';
     }
 }
