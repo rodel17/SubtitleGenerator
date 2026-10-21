@@ -5,6 +5,7 @@ import { api, errorMessage } from '@/lib/api'
 import { isRetryable, resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
 import { saveBlob } from '@/lib/download'
 import { formatBytes } from '@/lib/format'
+import { localId } from '@/lib/id'
 import {
   mediaKindOf,
   SERVER_PROCESSING_STATUSES,
@@ -97,7 +98,7 @@ export const useUploadsStore = defineStore('uploads', () => {
 
   function enqueue(files: File[], language: string, format: SubtitleFormat) {
     const queued = files.map((file) => {
-      const id = crypto.randomUUID()
+      const id = localId()
       pendingFiles.set(id, file)
 
       return {
@@ -119,7 +120,7 @@ export const useUploadsStore = defineStore('uploads', () => {
   /** Show a file that was rejected before upload (wrong type, too large). */
   function addRejected(file: File, reason: string) {
     items.value.unshift({
-      id: crypto.randomUUID(),
+      id: localId(),
       name: file.name,
       kind: mediaKindOf(file.name),
       size: file.size,
