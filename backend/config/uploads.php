@@ -19,14 +19,15 @@ return [
     | Size Limits
     |--------------------------------------------------------------------------
     |
-    | "max_size" is the largest media file accepted, in bytes (default 2 GB).
+    | "max_size" is the largest media file accepted, in bytes (default 500 MB).
+    | Keep it in step with MAX_FILE_SIZE in frontend/src/types/upload.ts.
     | "chunk_size" is the size of each uploaded piece, in bytes (default 5 MB).
     | Keep chunk_size below PHP's upload_max_filesize and nginx's
     | client_max_body_size (see Docker/php/uploads.ini, Docker/nginx).
     |
     */
 
-    'max_size' => (int) env('UPLOADS_MAX_SIZE', 2 * 1024 * 1024 * 1024),
+    'max_size' => (int) env('UPLOADS_MAX_SIZE', 500 * 1024 * 1024),
 
     'chunk_size' => (int) env('UPLOADS_CHUNK_SIZE', 5 * 1024 * 1024),
 
@@ -49,5 +50,19 @@ return [
     */
 
     'abandoned_after_hours' => (int) env('UPLOADS_ABANDONED_AFTER_HOURS', 24),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Media Retention
+    |--------------------------------------------------------------------------
+    |
+    | The original media file is deleted this many hours after the upload is
+    | ready or has failed, by the hourly `DeleteExpiredMedia` job; only the
+    | transcript and subtitles are kept. The grace period leaves time to
+    | retry a failed transcription.
+    |
+    */
+
+    'media_retention_hours' => (int) env('UPLOADS_MEDIA_RETENTION_HOURS', 24),
 
 ];

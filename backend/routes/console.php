@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\DeleteExpiredMedia;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -10,3 +11,4 @@ Artisan::command('inspire', function () {
 
 Schedule::command('model:prune')->daily();
 Schedule::command('horizon:snapshot')->everyFiveMinutes();
+Schedule::job(new DeleteExpiredMedia)->hourly();

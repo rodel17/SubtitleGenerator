@@ -90,7 +90,10 @@ export interface UploadResource {
 export const ACCEPTED_EXTENSIONS = ['mp4', 'mov', 'mkv', 'ts', 'mp3', 'wav', 'm4a'] as const
 
 /** Must match `uploads.max_size` in backend/config/uploads.php */
-export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
+export const MAX_FILE_SIZE = 500 * 1024 * 1024
+
+/** Must match `uploads.media_retention_hours` in backend/config/uploads.php */
+export const MEDIA_RETENTION_HOURS = 24
 
 export const LANGUAGES = [
   { value: 'auto', label: 'Auto-detect' },
