@@ -6,6 +6,7 @@ import FormatToggle from '@/components/upload/FormatToggle.vue'
 import SelectedFilePreview from '@/components/upload/SelectedFilePreview.vue'
 import UploadListItem from '@/components/upload/UploadListItem.vue'
 import { formatBytes } from '@/lib/format'
+import { localId } from '@/lib/id'
 import { useUploadsStore } from '@/stores/uploads'
 import {
   ACCEPTED_EXTENSIONS,
@@ -40,7 +41,7 @@ function addFiles(files: File[]) {
     } else if (file.size > MAX_FILE_SIZE) {
       uploads.addRejected(file, `File is larger than the ${formatBytes(MAX_FILE_SIZE)} limit.`)
     } else {
-      selectedFiles.value.push({ id: crypto.randomUUID(), file })
+      selectedFiles.value.push({ id: localId(), file })
     }
   }
 }
