@@ -53,7 +53,7 @@ function fileOf(name: string, bytes = 10): File {
 
 function hugeFile(name: string): File {
   const file = fileOf(name)
-  Object.defineProperty(file, 'size', { value: 2 * 1024 ** 3 + 1 })
+  Object.defineProperty(file, 'size', { value: 500 * 1024 ** 2 + 1 })
   return file
 }
 
@@ -174,7 +174,7 @@ describe('choosing files', () => {
     await choose(wrapper, [hugeFile('movie.mp4')])
 
     expect(wrapper.text()).not.toContain('Selected')
-    expect(wrapper.text()).toContain('File is larger than the 2.0 GB limit.')
+    expect(wrapper.text()).toContain('File is larger than the 500 MB limit.')
   })
 
   it('keeps the valid files from a mixed selection', async () => {

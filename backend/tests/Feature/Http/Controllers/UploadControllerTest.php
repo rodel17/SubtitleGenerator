@@ -248,7 +248,7 @@ describe('store', function () {
         'size negative' => [['size' => -5], 'size', 'The size field must be at least 1.'],
         'size not an integer' => [['size' => 'big'], 'size', 'The size field must be an integer.'],
         'size fractional' => [['size' => 10.5], 'size', 'The size field must be an integer.'],
-        'size over 2 GB' => [['size' => 2 * 1024 ** 3 + 1], 'size', 'The file is larger than the 2 GB limit.'],
+        'size over 500 MB' => [['size' => 500 * 1024 ** 2 + 1], 'size', 'The file is larger than the 500 MB limit.'],
         'unknown subtitle format' => [['subtitle_format' => 'ass'], 'subtitle_format', 'The selected subtitle format is invalid.'],
         'language too long' => [['language' => 'english-uk'.'x'], 'language', 'The language field must not be greater than 10 characters.'],
         'mime type too long' => [['mime_type' => str_repeat('a', 256)], 'mime_type', 'The mime type field must not be greater than 255 characters.'],
@@ -257,11 +257,19 @@ describe('store', function () {
     it('accepts a file of exactly the maximum size', function () {
         $response = $this->postJson('/api/uploads', [
             'name' => 'clip.mp4',
-            'size' => 2 * 1024 ** 3,
+            'size' => 500 * 1024 ** 2,
             'subtitle_format' => 'srt',
         ]);
 
         $response->assertCreated();
+    });
+
+    it('states a limit of 1 GB or more in GB', function () {
+        config(['uploads.max_size' => 2 * 1024 ** 3]);
+
+        $response = $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 2 * 1024 ** 3 + 1, 'subtitle_format' => 'srt']);
+
+        $response->assertUnprocessable()->assertJsonValidationErrors(['size' => 'The file is larger than the 2 GB limit.']);
     });
 
     it('returns 422 for a file name without a supported extension', function (string $name) {
