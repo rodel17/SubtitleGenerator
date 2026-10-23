@@ -89,7 +89,8 @@ jobs:
           VITE_API_URL: http://localhost:8000/api
 
   # Deploys main to the EC2 server once both test jobs pass.
-  # GitHub signs in to AWS with OIDC (no stored AWS keys) and AWS Systems Manager
+  # GitHub signs in to AWS as the `github-deploy` IAM user (access key in repo secrets;
+  # the AWS Free plan doesn't allow OIDC identity providers) and AWS Systems Manager
   # runs Docker/deploy.sh on the instance, so SSH stays closed to GitHub's runners.
   # One-time AWS/GitHub setup: see "CD" in PROGRESS.md.
   deploy:
@@ -103,7 +104,6 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     permissions:
-      id-token: write # lets the job request the OIDC token AWS trusts
       contents: read
     env:
       AWS_REGION: ap-southeast-2
@@ -112,7 +112,8 @@ jobs:
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
           mask-aws-account-id: true # the repo is public, and so are its Actions logs
 
