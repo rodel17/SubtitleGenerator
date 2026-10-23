@@ -7,17 +7,18 @@ use App\Http\Resources\UploadResource;
 use App\Models\Upload;
 use App\Services\ChunkedUploadService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
 
 class UploadController extends Controller
 {
     /**
-     * List the most recent uploads.
+     * List the signed-in user's most recent uploads.
      */
-    public function index(): AnonymousResourceCollection
+    public function index(Request $request): AnonymousResourceCollection
     {
-        return UploadResource::collection(Upload::query()->latest()->limit(20)->get());
+        return UploadResource::collection($request->user()->uploads()->latest()->limit(20)->get());
     }
 
     /**
@@ -25,7 +26,7 @@ class UploadController extends Controller
      */
     public function store(StoreUploadRequest $request, ChunkedUploadService $uploads): JsonResponse
     {
-        $upload = $uploads->start($request->validated());
+        $upload = $uploads->start($request->user(), $request->validated());
 
         return UploadResource::make($upload)->response()->setStatusCode(201);
     }

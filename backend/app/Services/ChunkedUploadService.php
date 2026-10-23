@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\UploadStatus;
 use App\Jobs\AssembleUpload;
 use App\Models\Upload;
+use App\Models\User;
 use finfo;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Http\UploadedFile;
@@ -21,15 +22,15 @@ class ChunkedUploadService
     private const SNIFF_BYTES = 1024 * 1024;
 
     /**
-     * Start a chunked upload for a file the client is about to send.
+     * Start a chunked upload, owned by $user, for a file the client is about to send.
      *
      * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, subtitle_format: string}  $attributes
      */
-    public function start(array $attributes): Upload
+    public function start(User $user, array $attributes): Upload
     {
         $chunkSize = (int) config('uploads.chunk_size');
 
-        return Upload::create([
+        return $user->uploads()->create([
             'original_name' => $attributes['name'],
             'extension' => strtolower(pathinfo($attributes['name'], PATHINFO_EXTENSION)),
             'mime_type' => $attributes['mime_type'] ?? null,

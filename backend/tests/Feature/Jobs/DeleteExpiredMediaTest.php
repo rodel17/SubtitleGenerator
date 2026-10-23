@@ -5,6 +5,7 @@ use App\Jobs\DeleteExpiredMedia;
 use App\Models\Upload;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
 
 beforeEach(function () {
     Storage::fake('local');
@@ -71,6 +72,7 @@ it('still deletes the rest of an upload whose media is gone', function () {
     $upload = finishedUpload(UploadStatus::Ready, 24);
     DeleteExpiredMedia::dispatch();
 
+    Sanctum::actingAs($upload->user);
     $this->deleteJson("/api/uploads/{$upload->id}")->assertNoContent();
 
     $this->assertModelMissing($upload);
