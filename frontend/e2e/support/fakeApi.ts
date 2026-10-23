@@ -77,7 +77,12 @@ export class FakeApi {
 
   constructor(private readonly page: Page) {}
 
+  /** Signs the browser in as a fake user, then fakes the uploads API */
   async install() {
+    await this.page.addInitScript(() => localStorage.setItem('auth_token', 'e2e-token'))
+    await this.page.route(/\/api\/user$/, (route) =>
+      this.json(route, 200, { data: { id: 1, name: 'Ada Lovelace', email: 'ada@example.com', avatar: null } }),
+    )
     await this.page.route(/\/api\/uploads(\/.*)?$/, (route, request) => this.handle(route, request))
   }
 

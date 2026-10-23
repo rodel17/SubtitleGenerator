@@ -6,12 +6,16 @@ use App\Jobs\ExtractAudio;
 use App\Jobs\GenerateSubtitles;
 use App\Jobs\TranscribeAudio;
 use App\Models\Upload;
+use App\Models\User;
 use App\Services\ChunkedUploadService;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
+    $this->user = User::factory()->create();
+    Sanctum::actingAs($this->user);
     // Assembly runs for real on the sync queue; the transcription chain needs ffmpeg and Whisper
     Queue::fake([ExtractAudio::class]);
 });
@@ -20,7 +24,7 @@ it('accepts the upload, then assembles the chunks into the original file', funct
     Storage::fake('local');
     $this->travelTo('2026-10-20 12:00:00');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes, 'interview.wav')->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes, 'interview.wav')->create();
     sendAllChunks($upload, $bytes);
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
@@ -39,7 +43,7 @@ it('queues assembly on the uploads queue instead of doing it in the request', fu
     Queue::fake();
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
@@ -53,7 +57,7 @@ it('queues assembly on the uploads queue instead of doing it in the request', fu
 it('queues extraction, transcription and subtitles as a chain once the file is assembled', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
 
     $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
@@ -66,7 +70,7 @@ it('queues assembly only once when a concurrent request claimed the upload first
     Queue::fake();
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
     // Another request moved it on after this one loaded the model
     Upload::whereKey($upload->id)->update(['status' => UploadStatus::Assembling]);
@@ -79,7 +83,7 @@ it('queues assembly only once when a concurrent request claimed the upload first
 it('deletes the chunks once the file is assembled', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
 
     $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
@@ -90,7 +94,7 @@ it('deletes the chunks once the file is assembled', function () {
 it('assembles chunks in numeric order when there are more than ten', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes, chunkSize: 5)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes, chunkSize: 5)->create();
     sendAllChunks($upload, $bytes);
 
     $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
@@ -102,7 +106,7 @@ it('assembles chunks in numeric order when there are more than ten', function ()
 it('assembles the original file when chunks arrive out of order', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes, order: [3, 0, 2, 1]);
 
     $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
@@ -112,7 +116,7 @@ it('assembles the original file when chunks arrive out of order', function () {
 
 it('accepts each kind of media by its content', function (string $bytes, string $name, string $mimeType) {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent($bytes, $name)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes, $name)->create();
     sendAllChunks($upload, $bytes);
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
@@ -126,7 +130,7 @@ it('accepts each kind of media by its content', function (string $bytes, string 
 it('stores the file under its id, whatever the original name contains', function () {
     Storage::fake('local');
     $bytes = mpegTsBytes();
-    $upload = Upload::factory()->forContent($bytes, '../../public/evil.ts')->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes, '../../public/evil.ts')->create();
     sendAllChunks($upload, $bytes);
 
     $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
@@ -138,7 +142,7 @@ it('stores the file under its id, whatever the original name contains', function
 it('returns 422 listing the missing chunks and keeps the upload open', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes, order: [0, 2]);
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
@@ -150,7 +154,7 @@ it('returns 422 listing the missing chunks and keeps the upload open', function 
 
 it('lists at most 20 missing chunks in the error', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 25), chunkSize: 1)->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 25), chunkSize: 1)->create();
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
 
@@ -162,7 +166,7 @@ it('lists at most 20 missing chunks in the error', function () {
 it('returns 422 when a stored chunk was corrupted after upload', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
     Storage::disk('local')->put("chunks/{$upload->id}/1", 'short');
 
@@ -177,7 +181,7 @@ it('returns 422 when a stored chunk was corrupted after upload', function () {
 
 it('returns 422 and discards the assembled file when the content is not media', function (string $bytes, string $name) {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent($bytes, $name)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes, $name)->create();
     sendAllChunks($upload, $bytes);
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
@@ -196,7 +200,7 @@ it('returns 422 and discards the assembled file when the content is not media', 
 
 it('returns 409 for an upload that is already complete', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->uploaded()->create();
+    $upload = Upload::factory()->for($this->user)->uploaded()->create();
 
     $response = $this->postJson("/api/uploads/{$upload->id}/completion");
 
@@ -206,7 +210,7 @@ it('returns 409 for an upload that is already complete', function () {
 it('returns 409 when completion is requested twice', function () {
     Storage::fake('local');
     $bytes = wavBytes();
-    $upload = Upload::factory()->forContent($bytes)->create();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
     sendAllChunks($upload, $bytes);
     $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
 
@@ -218,4 +222,14 @@ it('returns 409 when completion is requested twice', function () {
 
 it('returns 404 for an unknown upload', function () {
     $this->postJson('/api/uploads/01a15979-96db-7264-a6ec-88c51a111e09/completion')->assertNotFound();
+});
+
+it("returns 404 for another user's upload and queues nothing", function () {
+    Queue::fake();
+    $upload = Upload::factory()->forContent(wavBytes())->create();
+
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertNotFound();
+
+    expect($upload->fresh()->status)->toBe(UploadStatus::Uploading);
+    Queue::assertNothingPushed();
 });

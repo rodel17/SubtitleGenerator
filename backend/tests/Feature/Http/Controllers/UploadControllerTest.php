@@ -2,15 +2,19 @@
 
 use App\Enums\UploadStatus;
 use App\Models\Upload;
+use App\Models\User;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
 
 beforeEach(function () {
+    $this->user = User::factory()->create();
+    Sanctum::actingAs($this->user);
     config(['uploads.chunk_size' => 20]);
 });
 
 describe('index', function () {
     it('lists uploads newest first', function () {
-        [$older, $newer] = Upload::factory()->count(2)->sequence(
+        [$older, $newer] = Upload::factory()->for($this->user)->count(2)->sequence(
             ['created_at' => now()->subHour()],
             ['created_at' => now()],
         )->create();
@@ -24,13 +28,24 @@ describe('index', function () {
     });
 
     it('returns only the 20 most recent uploads', function () {
-        $oldest = Upload::factory()->create(['created_at' => now()->subDay()]);
-        Upload::factory()->count(20)->create();
+        $oldest = Upload::factory()->for($this->user)->create(['created_at' => now()->subDay()]);
+        Upload::factory()->for($this->user)->count(20)->create();
 
         $response = $this->getJson('/api/uploads');
 
         $response->assertOk()->assertJsonCount(20, 'data');
         expect(collect($response->json('data'))->pluck('id'))->not->toContain($oldest->id);
+    });
+
+    it("does not list other users' uploads", function () {
+        $mine = Upload::factory()->for($this->user)->create();
+        Upload::factory()->create();
+        Upload::factory()->create(['user_id' => null]);
+
+        $this->getJson('/api/uploads')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $mine->id);
     });
 
     it('returns an empty list when there are no uploads', function () {
@@ -40,7 +55,7 @@ describe('index', function () {
 
 describe('show', function () {
     it('returns the upload with exactly the documented fields', function () {
-        $upload = Upload::factory()->uploaded()->create([
+        $upload = Upload::factory()->for($this->user)->uploaded()->create([
             'original_name' => 'Interview.mp4',
             'size' => 45,
             'chunk_size' => 20,
@@ -64,7 +79,7 @@ describe('show', function () {
     });
 
     it('reports the progress of the current background step', function (UploadStatus $status) {
-        $upload = Upload::factory()->uploaded()->create(['status' => $status]);
+        $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => $status]);
         $upload->reportProgress(42);
 
         $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.progress', 42);
@@ -74,7 +89,7 @@ describe('show', function () {
     ]);
 
     it('reports no progress when nothing is running', function (UploadStatus $status) {
-        $upload = Upload::factory()->uploaded()->create(['status' => $status]);
+        $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => $status]);
         $upload->reportProgress(42);
 
         $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.progress', null);
@@ -86,7 +101,7 @@ describe('show', function () {
     ]);
 
     it('explains why processing failed', function () {
-        $upload = Upload::factory()->uploaded()->create();
+        $upload = Upload::factory()->for($this->user)->uploaded()->create();
         $upload->markFailed('No speech was detected in this file.');
 
         $this->getJson("/api/uploads/{$upload->id}")
@@ -95,7 +110,7 @@ describe('show', function () {
     });
 
     it('links each generated subtitle file once ready', function () {
-        $upload = Upload::factory()->ready()->create(['subtitle_format' => 'both']);
+        $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'both']);
 
         $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.subtitles', [
             'srt' => url("/api/uploads/{$upload->id}/subtitles/srt"),
@@ -104,15 +119,21 @@ describe('show', function () {
     });
 
     it('has no subtitle links before the upload is ready', function () {
-        $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+        $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => UploadStatus::Transcribing]);
 
         $this->getJson("/api/uploads/{$upload->id}")->assertJsonMissingPath('data.subtitles');
     });
 
     it('does not expose the storage path', function () {
-        $upload = Upload::factory()->uploaded()->create();
+        $upload = Upload::factory()->for($this->user)->uploaded()->create();
 
         $this->getJson("/api/uploads/{$upload->id}")->assertJsonMissingPath('data.path');
+    });
+
+    it("returns 404 for another user's upload", function () {
+        $upload = Upload::factory()->create();
+
+        $this->getJson("/api/uploads/{$upload->id}")->assertNotFound();
     });
 
     it('returns 404 for an unknown or malformed id', function (string $id) {
@@ -145,12 +166,36 @@ describe('store', function () {
             ->assertJsonPath('data.completed_at', null);
         $this->assertDatabaseHas('uploads', [
             'id' => $response->json('data.id'),
+            'user_id' => $this->user->id,
             'original_name' => 'Team Interview.mp4',
             'language' => 'en',
             'subtitle_format' => 'vtt',
             'status' => 'uploading',
             'path' => null,
         ]);
+    });
+
+    it('returns 429 with a readable message once the hourly upload limit is reached', function () {
+        config(['uploads.max_per_hour' => 2]);
+        $payload = ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt'];
+        $this->postJson('/api/uploads', $payload)->assertCreated();
+        $this->postJson('/api/uploads', $payload)->assertCreated();
+
+        $this->postJson('/api/uploads', $payload)
+            ->assertTooManyRequests()
+            ->assertJsonPath('message', 'You can start up to 2 uploads per hour. Please try again later.');
+
+        expect(Upload::count())->toBe(2);
+    });
+
+    it('counts the hourly upload limit per user', function () {
+        config(['uploads.max_per_hour' => 1]);
+        $payload = ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt'];
+        $this->postJson('/api/uploads', $payload)->assertCreated();
+
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/uploads', $payload)->assertCreated();
     });
 
     it('keeps the file modification time so a resumed upload can be matched to its file', function () {
@@ -319,7 +364,7 @@ describe('destroy', function () {
     it('deletes an in-progress upload and its received chunks', function () {
         Storage::fake('local');
         $bytes = wavBytes();
-        $upload = Upload::factory()->forContent($bytes)->create();
+        $upload = Upload::factory()->for($this->user)->forContent($bytes)->create();
         sendAllChunks($upload, substr($bytes, 0, 40));
 
         $response = $this->deleteJson("/api/uploads/{$upload->id}");
@@ -331,7 +376,7 @@ describe('destroy', function () {
 
     it('deletes a completed upload and its media file', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->uploaded()->create();
+        $upload = Upload::factory()->for($this->user)->uploaded()->create();
         Storage::disk('local')->put($upload->path, 'media');
 
         $response = $this->deleteJson("/api/uploads/{$upload->id}");
@@ -343,7 +388,7 @@ describe('destroy', function () {
 
     it('deletes the transcript, subtitles and leftover audio of a transcribed upload', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->ready()->create(['subtitle_format' => 'both']);
+        $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'both']);
         $files = [
             $upload->path,
             $upload->transcriptPath(),
@@ -363,7 +408,7 @@ describe('destroy', function () {
 
     it('leaves other uploads and their files untouched', function () {
         Storage::fake('local');
-        [$deleted, $kept] = Upload::factory()->uploaded()->count(2)->create();
+        [$deleted, $kept] = Upload::factory()->for($this->user)->uploaded()->count(2)->create();
         Storage::disk('local')->put($deleted->path, 'media');
         Storage::disk('local')->put($kept->path, 'media');
 
@@ -377,9 +422,20 @@ describe('destroy', function () {
         $this->deleteJson('/api/uploads/01a15979-96db-7264-a6ec-88c51a111e09')->assertNotFound();
     });
 
+    it("returns 404 for another user's upload and keeps it", function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->uploaded()->create();
+        Storage::disk('local')->put($upload->path, 'media');
+
+        $this->deleteJson("/api/uploads/{$upload->id}")->assertNotFound();
+
+        $this->assertModelExists($upload);
+        Storage::disk('local')->assertExists($upload->path);
+    });
+
     it('returns 404 when the upload was already deleted', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->create();
+        $upload = Upload::factory()->for($this->user)->create();
         $this->deleteJson("/api/uploads/{$upload->id}")->assertNoContent();
 
         $this->deleteJson("/api/uploads/{$upload->id}")->assertNotFound();
@@ -387,7 +443,7 @@ describe('destroy', function () {
 });
 
 it('rejects the update method because uploads cannot be edited', function () {
-    $upload = Upload::factory()->create(['status' => UploadStatus::Uploading]);
+    $upload = Upload::factory()->for($this->user)->create(['status' => UploadStatus::Uploading]);
 
     $this->putJson("/api/uploads/{$upload->id}", ['status' => 'uploaded'])->assertMethodNotAllowed();
 });
