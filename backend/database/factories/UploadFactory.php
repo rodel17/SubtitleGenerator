@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Enums\UploadStatus;
 use App\Models\Upload;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -22,6 +23,7 @@ class UploadFactory extends Factory
         $size = fake()->numberBetween(1, 20) * $chunkSize;
 
         return [
+            'user_id' => User::factory(),
             'original_name' => fake()->slug(2).'.mp4',
             'extension' => 'mp4',
             'mime_type' => 'video/mp4',

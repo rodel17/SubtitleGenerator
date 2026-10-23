@@ -1,5 +1,20 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import { reloadTo } from '@/lib/navigation'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
+
+const initial = computed(() => auth.user?.name.trim().charAt(0).toUpperCase() ?? '')
+const signingOut = ref(false)
+
+async function signOut() {
+  signingOut.value = true
+  await auth.signOut()
+  reloadTo('/login')
+}
 </script>
 
 <template>
@@ -26,21 +41,52 @@ import { RouterLink } from 'vue-router'
         <span class="text-base font-semibold tracking-tight">Subtitle Generator</span>
       </RouterLink>
 
-      <nav class="flex items-center gap-1 text-sm font-medium">
-        <RouterLink
-          to="/"
-          class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-          exact-active-class="bg-slate-100 text-slate-900!"
-        >
-          Upload
-        </RouterLink>
-        <a href="#" class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900">
-          My files
-        </a>
-        <a href="#" class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900">
-          Settings
-        </a>
-      </nav>
+      <div v-if="auth.user" class="flex flex-wrap items-center gap-4">
+        <nav class="flex items-center gap-1 text-sm font-medium">
+          <RouterLink
+            to="/"
+            class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            exact-active-class="bg-slate-100 text-slate-900!"
+          >
+            Upload
+          </RouterLink>
+          <a href="#" class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900">
+            My files
+          </a>
+          <a href="#" class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900">
+            Settings
+          </a>
+        </nav>
+
+        <div class="flex items-center gap-3 border-l border-slate-200 pl-4">
+          <img
+            v-if="auth.user.avatar"
+            :src="auth.user.avatar"
+            alt=""
+            class="size-8 rounded-full"
+            referrerpolicy="no-referrer"
+          />
+          <span
+            v-else
+            class="flex size-8 items-center justify-center rounded-full bg-accent-soft text-sm font-semibold text-accent"
+            aria-hidden="true"
+          >
+            {{ initial }}
+          </span>
+          <span class="hidden max-w-40 truncate text-sm text-slate-700 sm:block" :title="auth.user.email">
+            {{ auth.user.name }}
+          </span>
+          <button
+            type="button"
+            class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-70"
+            :disabled="signingOut"
+            @click="signOut"
+          >
+            <LoadingSpinner v-if="signingOut" class="size-4" />
+            {{ signingOut ? 'Signing out…' : 'Sign out' }}
+          </button>
+        </div>
+      </div>
     </div>
   </header>
 </template>

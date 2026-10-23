@@ -65,4 +65,17 @@ return [
 
     'media_retention_hours' => (int) env('UPLOADS_MEDIA_RETENTION_HOURS', 24),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Rate Limit
+    |--------------------------------------------------------------------------
+    |
+    | How many uploads each user may start per hour. Every upload queues a
+    | CPU-heavy Whisper transcription, so this keeps one user from filling
+    | the queue.
+    |
+    */
+
+    'max_per_hour' => (int) env('UPLOADS_MAX_PER_HOUR', 30),
+
 ];
