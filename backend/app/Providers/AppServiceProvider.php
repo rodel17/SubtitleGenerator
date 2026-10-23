@@ -4,6 +4,9 @@ namespace App\Providers;
 
 use App\Services\Transcription\Transcriber;
 use App\Services\Transcription\WhisperTranscriber;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -21,6 +24,14 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        RateLimiter::for('uploads', function (Request $request): Limit {
+            $perHour = (int) config('uploads.max_per_hour');
+
+            return Limit::perHour($perHour)
+                ->by($request->user()->id)
+                ->response(fn (Request $request, array $headers) => response()->json([
+                    'message' => "You can start up to {$perHour} uploads per hour. Please try again later.",
+                ], 429, $headers));
+        });
     }
 }

@@ -1,11 +1,18 @@
 <?php
 
 use App\Models\Upload;
+use App\Models\User;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
+
+beforeEach(function () {
+    $this->user = User::factory()->create();
+    Sanctum::actingAs($this->user);
+});
 
 it('stores a chunk and leaves the upload in progress', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
     $response = postChunk($upload, 1, str_repeat('b', 20));
 
@@ -16,7 +23,7 @@ it('stores a chunk and leaves the upload in progress', function () {
 
 it('accepts a last chunk that is shorter than the chunk size', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
     $response = postChunk($upload, 2, 'ccccc');
 
@@ -26,7 +33,7 @@ it('accepts a last chunk that is shorter than the chunk size', function () {
 
 it('replaces a chunk that is sent again', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
     postChunk($upload, 0, str_repeat('x', 20))->assertNoContent();
 
     $response = postChunk($upload, 0, str_repeat('y', 20));
@@ -38,7 +45,7 @@ it('replaces a chunk that is sent again', function () {
 
 it('validates chunk sizes against the size stored on the upload, not the current config', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 45), chunkSize: 20)->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45), chunkSize: 20)->create();
     config(['uploads.chunk_size' => 5]);
 
     $response = postChunk($upload, 0, str_repeat('a', 20));
@@ -47,7 +54,7 @@ it('validates chunk sizes against the size stored on the upload, not the current
 });
 
 it('returns 422 for both fields when the payload is empty', function () {
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
     $response = $this->postJson("/api/uploads/{$upload->id}/chunks", []);
 
@@ -59,7 +66,7 @@ it('returns 422 for both fields when the payload is empty', function () {
 
 it('returns 422 for an index outside the upload', function (mixed $index, string $message) {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
     $response = postChunk($upload, $index, str_repeat('a', 20));
 
@@ -73,7 +80,7 @@ it('returns 422 for an index outside the upload', function (mixed $index, string
 ]);
 
 it('returns 422 when the chunk is not a file', function () {
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
     $response = $this->postJson("/api/uploads/{$upload->id}/chunks", [
         'index' => 0,
@@ -87,7 +94,7 @@ it('returns 422 when the chunk is not a file', function () {
 
 it('returns 422 when a chunk is not exactly the expected size', function (int $index, int $bytes, string $message) {
     Storage::fake('local');
-    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+    $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
     $response = postChunk($upload, $index, str_repeat('a', $bytes));
 
@@ -102,7 +109,7 @@ it('returns 422 when a chunk is not exactly the expected size', function (int $i
 
 it('returns 409 for an upload that is already complete', function () {
     Storage::fake('local');
-    $upload = Upload::factory()->uploaded()->create(['size' => 20, 'chunk_size' => 20, 'total_chunks' => 1]);
+    $upload = Upload::factory()->for($this->user)->uploaded()->create(['size' => 20, 'chunk_size' => 20, 'total_chunks' => 1]);
 
     $response = postChunk($upload, 0, str_repeat('a', 20));
 
@@ -119,7 +126,7 @@ it('returns 404 for an unknown upload', function () {
 describe('index', function () {
     it('lists the chunks already received, so an interrupted upload can resume', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
         postChunk($upload, 2, str_repeat('c', 5));
         postChunk($upload, 0, str_repeat('a', 20));
 
@@ -134,7 +141,7 @@ describe('index', function () {
 
     it('leaves out a stored chunk with the wrong size, so the client sends it again', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
         postChunk($upload, 0, str_repeat('a', 20));
         Storage::disk('local')->put("chunks/{$upload->id}/1", 'truncated');
 
@@ -143,7 +150,7 @@ describe('index', function () {
 
     it('ignores files that are not chunks of this upload', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
         Storage::disk('local')->put("chunks/{$upload->id}/notes", str_repeat('a', 20));
         Storage::disk('local')->put("chunks/{$upload->id}/3", str_repeat('a', 20));
 
@@ -152,13 +159,13 @@ describe('index', function () {
 
     it('returns an empty list before any chunk arrives', function () {
         Storage::fake('local');
-        $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+        $upload = Upload::factory()->for($this->user)->forContent(str_repeat('a', 45))->create();
 
         $this->getJson("/api/uploads/{$upload->id}/chunks")->assertJsonPath('data.received', []);
     });
 
     it('returns 409 once the upload is complete', function () {
-        $upload = Upload::factory()->uploaded()->create();
+        $upload = Upload::factory()->for($this->user)->uploaded()->create();
 
         $this->getJson("/api/uploads/{$upload->id}/chunks")
             ->assertConflict()
@@ -168,4 +175,19 @@ describe('index', function () {
     it('returns 404 for an unknown upload', function () {
         $this->getJson('/api/uploads/01a15979-96db-7264-a6ec-88c51a111e09/chunks')->assertNotFound();
     });
+});
+
+it("returns 404 for another user's upload and stores nothing", function () {
+    Storage::fake('local');
+    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+
+    postChunk($upload, 0, str_repeat('a', 20))->assertNotFound();
+
+    Storage::disk('local')->assertMissing("chunks/{$upload->id}");
+});
+
+it("returns 404 when listing the chunks of another user's upload", function () {
+    $upload = Upload::factory()->forContent(str_repeat('a', 45))->create();
+
+    $this->getJson("/api/uploads/{$upload->id}/chunks")->assertNotFound();
 });
