@@ -5,9 +5,10 @@ on:
   pull_request:
 
 # Cancel an in-progress run when a newer commit lands on the same branch/PR.
+# Never on main: a cancelled run could stop halfway through a deploy.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   backend:
@@ -86,3 +87,77 @@ jobs:
         run: npm run build-only
         env:
           VITE_API_URL: http://localhost:8000/api
+
+  # Deploys main to the EC2 server once both test jobs pass.
+  # GitHub signs in to AWS with OIDC (no stored AWS keys) and AWS Systems Manager
+  # runs Docker/deploy.sh on the instance, so SSH stays closed to GitHub's runners.
+  # One-time AWS/GitHub setup: see "CD" in PROGRESS.md.
+  deploy:
+    name: Deploy to EC2
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # One deploy at a time; a newer one waits instead of cancelling the running one
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      id-token: write # lets the job request the OIDC token AWS trusts
+      contents: read
+    env:
+      AWS_REGION: ap-southeast-2
+      INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      APP_DIR: /home/ubuntu/SubtitleGenerator
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true # the repo is public, and so are its Actions logs
+
+      - name: Check the server is reachable
+        run: |
+          ping=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+            --query 'InstanceInformationList[0].PingStatus' --output text)
+          if [ "$ping" != "Online" ]; then
+            echo "::error::Instance $INSTANCE_ID isn't online in Systems Manager (status: $ping). Is it stopped?"
+            exit 1
+          fi
+
+      - name: Deploy (git merge + Docker/deploy.sh on the server)
+        run: |
+          # Runs as root through SSM; the deploy itself runs as ubuntu, which owns the checkout.
+          # flock queues a deploy behind one that is still running on the server.
+          # Merging this run's exact commit (fast-forward only) deploys what CI tested,
+          # and fails loudly if someone changed tracked files on the server.
+          script="cd $APP_DIR && exec runuser -u ubuntu -- env HOME=/home/ubuntu flock /tmp/subtitle-deploy.lock \
+            bash -c 'git fetch --quiet origin main && git merge --ff-only $GITHUB_SHA && bash Docker/deploy.sh'"
+          params=$(jq -nc --arg script "$script" '{commands: [$script], executionTimeout: ["1800"]}')
+
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy ${GITHUB_SHA::7}" \
+            --timeout-seconds 60 \
+            --parameters "$params" \
+            --query Command.CommandId --output text)
+          echo "SSM command $command_id"
+
+          status=Pending
+          while [ "$status" = Pending ] || [ "$status" = InProgress ] || [ "$status" = Delayed ]; do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2> /dev/null || echo Pending)
+            echo "… $status"
+          done
+
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          if [ "$status" != Success ]; then
+            aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query StandardErrorContent --output text
+            echo "::error::Deploy finished with status $status"
+            exit 1
+          fi
