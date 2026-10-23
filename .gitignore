@@ -32,3 +32,4 @@ auth.json
 # Claude Code session context (local only)
 /CLAUDE.md
 /PROGRESS.md
+/DEPLOYMENT.md
