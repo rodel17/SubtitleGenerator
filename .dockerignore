@@ -1,0 +1,23 @@
+# Build context is the repo root (docker-compose.yml: context: .). Keep it to source code:
+# the containers mount ./backend and ./frontend at run time anyway.
+
+.git
+
+# Runtime data written by the containers as www-data. Some of it (e.g. storage/app/private/audio)
+# is mode 0700, so `docker compose build` run as another user can't read it and fails.
+backend/storage/app/private
+backend/storage/app/public
+backend/storage/logs
+backend/storage/framework/cache
+backend/storage/framework/sessions
+backend/storage/framework/testing
+backend/storage/framework/views
+
+# Installed inside the image; host copies would be stale or built for another OS
+backend/vendor
+frontend/node_modules
+frontend/dist
+
+# Secrets stay out of images
+backend/.env
+frontend/.env
