@@ -11,7 +11,6 @@ import {
   SERVER_PROCESSING_STATUSES,
   subtitleFileName,
   type ServerUploadStatus,
-  type SubtitleFileFormat,
   type SubtitleFormat,
   type UploadItem,
   type UploadResource,
@@ -51,7 +50,8 @@ function fromResource(resource: UploadResource): UploadItem {
     error: errorFor(resource),
     language: resource.language ?? undefined,
     format: resource.subtitle_format,
-    subtitles: resource.subtitles,
+    downloadUrl: resource.download_url,
+    expiresAt: resource.expires_at ?? undefined,
   }
 }
 
@@ -60,7 +60,8 @@ function applyResource(item: UploadItem, resource: UploadResource) {
   item.status = STATUS_FROM_SERVER[resource.status]
   item.progress = resource.progress ?? undefined
   item.error = errorFor(resource)
-  item.subtitles = resource.subtitles
+  item.downloadUrl = resource.download_url
+  item.expiresAt = resource.expires_at ?? undefined
 }
 
 export const useUploadsStore = defineStore('uploads', () => {
@@ -80,6 +81,20 @@ export const useUploadsStore = defineStore('uploads', () => {
     items.value.some((item) => ['queued', 'uploading'].includes(item.status)),
   )
 
+  /**
+   * Ready subtitles wait for the user to download them, the one that finished first
+   * (earliest deletion time) first; ties keep list order.
+   */
+  const nextReady = computed(() =>
+    items.value
+      .filter((item) => item.status === 'ready')
+      .reduce<UploadItem | undefined>(
+        (first, item) => (!first || (item.expiresAt ?? '~') < (first.expiresAt ?? '~') ? item : first),
+        undefined,
+      ),
+  )
+
+  /** Load what the server still has: uploads in progress, waiting to be downloaded, or failed. */
   async function fetchRecent() {
     isLoading.value = true
     loadError.value = null
@@ -90,7 +105,7 @@ export const useUploadsStore = defineStore('uploads', () => {
       items.value.push(...data.data.filter((upload) => !known.has(upload.id)).map(fromResource))
       startPolling()
     } catch (error) {
-      loadError.value = errorMessage(error, 'Could not load recent uploads.')
+      loadError.value = errorMessage(error, 'Could not load your uploads.')
     } finally {
       isLoading.value = false
     }
@@ -258,24 +273,38 @@ export const useUploadsStore = defineStore('uploads', () => {
     )
   }
 
-  /** Fetch a subtitle file and save it, marking the format as downloading meanwhile. */
-  async function download(id: string, format: SubtitleFileFormat) {
+  /**
+   * Fetch the subtitles and save them, then delete the upload from the server:
+   * nothing is kept once the user has the file. A failed download keeps
+   * everything so the user can try again.
+   */
+  async function download(id: string) {
     const item = items.value.find((candidate) => candidate.id === id)
-    const url = item?.subtitles?.[format]
-    if (!item || !url || item.downloading?.includes(format)) return
+    if (!item?.downloadUrl || item.downloading) return
 
-    item.downloading = [...(item.downloading ?? []), format]
+    item.downloading = true
     item.downloadError = undefined
 
     try {
-      const { data } = await api.get<Blob>(url, { responseType: 'blob' })
-      saveBlob(data, subtitleFileName(item.name, format))
-    } catch {
+      const { data } = await api.get<Blob>(item.downloadUrl, { responseType: 'blob' })
+      saveBlob(data, subtitleFileName(item.name, item.format ?? 'srt'))
+    } catch (error) {
+      item.downloading = false
       // The error body is a Blob here, so there is no server message to show
-      item.downloadError = `The ${format.toUpperCase()} file could not be downloaded. Please try again.`
-    } finally {
-      item.downloading = item.downloading.filter((candidate) => candidate !== format)
+      item.downloadError =
+        isAxiosError(error) && error.response?.status === 404
+          ? 'These subtitles are no longer available.'
+          : 'The subtitles could not be downloaded. Please try again.'
+      return
     }
+
+    try {
+      await api.delete(`/uploads/${item.serverId}`)
+    } catch {
+      // The user has the file either way; the server deletes leftovers after RETENTION_HOURS
+    }
+
+    items.value = items.value.filter((candidate) => candidate.id !== id)
   }
 
   /**
@@ -315,6 +344,7 @@ export const useUploadsStore = defineStore('uploads', () => {
     isLoading,
     loadError,
     hasActiveUploads,
+    nextReady,
     fetchRecent,
     enqueue,
     addRejected,

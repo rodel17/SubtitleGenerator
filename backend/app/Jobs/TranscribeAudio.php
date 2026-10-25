@@ -47,6 +47,11 @@ class TranscribeAudio implements ShouldQueue
         $offset = 0.0;
 
         foreach ($pieces as $number => $piece) {
+            // Stopped by the user: the upload and its files are gone, so don't keep Whisper busy
+            if (! Upload::query()->whereKey($this->upload->id)->exists()) {
+                return;
+            }
+
             $result = $transcriber->transcribe($disk->path($piece), $language);
 
             foreach ($result['segments'] as $segment) {

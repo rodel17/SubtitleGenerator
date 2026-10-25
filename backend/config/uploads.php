@@ -41,29 +41,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Abandoned Uploads
+    | Retention
     |--------------------------------------------------------------------------
     |
-    | Uploads still incomplete after this many hours are pruned, together
-    | with their chunks, by the scheduled `model:prune` command.
+    | Nothing is kept once the user has their subtitles: the media, audio and
+    | transcript go as soon as the subtitles are written, and the subtitles
+    | (and the upload itself) as soon as they are downloaded. Anything never
+    | delivered is deleted this many hours after processing ended, and an
+    | upload never completed this many hours after it started, by the hourly
+    | `model:prune`. Keep in step with RETENTION_HOURS in
+    | frontend/src/types/upload.ts.
     |
     */
 
-    'abandoned_after_hours' => (int) env('UPLOADS_ABANDONED_AFTER_HOURS', 24),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Media Retention
-    |--------------------------------------------------------------------------
-    |
-    | The original media file is deleted this many hours after the upload is
-    | ready or has failed, by the hourly `DeleteExpiredMedia` job; only the
-    | transcript and subtitles are kept. The grace period leaves time to
-    | retry a failed transcription.
-    |
-    */
-
-    'media_retention_hours' => (int) env('UPLOADS_MEDIA_RETENTION_HOURS', 24),
+    'retention_hours' => (int) env('UPLOADS_RETENTION_HOURS', 6),
 
     /*
     |--------------------------------------------------------------------------

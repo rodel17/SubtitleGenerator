@@ -43,6 +43,7 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     status: 'ready',
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
+    expires_at: null,
     ...overrides,
   }
 }
@@ -88,15 +89,16 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('recent uploads', () => {
-  it('loads recent uploads when the page opens', async () => {
-    get.mockResolvedValue({ data: { data: [resource()] } })
+describe('in progress list', () => {
+  it('loads what the server still has when the page opens', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ status: 'transcribing', progress: 30 })] } })
 
     const wrapper = await mountView()
 
     expect(get).toHaveBeenCalledWith('/uploads')
+    expect(wrapper.text()).toContain('In progress')
     expect(wrapper.text()).toContain('product-demo.mov')
-    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Ready · English · SRT · 2.0 KB')
+    expect(wrapper.text()).toContain('Transcribing · 30%')
   })
 
   it('does not reload when the list already has items', async () => {
@@ -117,7 +119,7 @@ describe('recent uploads', () => {
     finish({ data: { data: [] } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('No uploads yet.')
+    expect(wrapper.text()).toContain('Nothing in progress.')
   })
 
   it('shows the error when the list cannot be loaded', async () => {
@@ -126,6 +128,24 @@ describe('recent uploads', () => {
     const wrapper = await mountView()
 
     expect(wrapper.text()).toContain('Network Error')
+  })
+
+  it('has no history: no "View all" and no ready files in the list', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ status: 'ready' })] } })
+
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).not.toContain('View all')
+    expect(wrapper.find('ul').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Nothing in progress.')
+  })
+
+  it('says files are deleted after download', async () => {
+    const wrapper = await mountView()
+
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain(
+      "deleted from our servers as soon as you download the subtitles, or 6 hours after processing if you don't",
+    )
   })
 })
 
@@ -219,7 +239,7 @@ describe('generating subtitles', () => {
     await flushPromises()
 
     expect(upload).toHaveBeenCalledWith(clip, expect.objectContaining({ language: 'ja', format: 'vtt' }))
-    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Ready · Japanese · VTT · 10 B')
+    expect(wrapper.get('[role="dialog"]').text().replace(/\s+/g, ' ')).toContain('clip.mp4 · Japanese · 10 B')
   })
 
   it('defaults to auto-detect and SRT', async () => {
@@ -248,23 +268,23 @@ describe('deleting an upload', () => {
   const dialogButton = (wrapper: Awaited<ReturnType<typeof mountView>>, name: string) =>
     dialog(wrapper).findAll('button').find((button) => button.text() === name)!
 
-  async function mountWithReadyUpload() {
-    get.mockResolvedValue({ data: { data: [resource({ id: 'server-3', name: 'interview.mp4' })] } })
+  async function mountWithInterruptedUpload() {
+    get.mockResolvedValue({ data: { data: [resource({ id: 'server-3', name: 'interview.mp4', status: 'uploading' })] } })
     const wrapper = await mountView()
-    await wrapper.get('button[aria-label="Delete upload"]').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Remove')!.trigger('click')
     return wrapper
   }
 
   it('asks for confirmation before deleting anything', async () => {
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
 
     expect(dialog(wrapper).text()).toContain('Delete this upload?')
-    expect(dialog(wrapper).text()).toContain(`"interview.mp4" and its subtitles will be deleted. This can't be undone.`)
+    expect(dialog(wrapper).text()).toContain(`"interview.mp4" and everything uploaded so far will be deleted. This can't be undone.`)
     expect(api.delete).not.toHaveBeenCalled()
   })
 
   it('focuses Cancel so a stray Enter does not delete', async () => {
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
     await flushPromises()
 
     expect(document.activeElement?.textContent?.trim()).toBe('Cancel')
@@ -272,7 +292,7 @@ describe('deleting an upload', () => {
   })
 
   it('keeps the upload when cancelled', async () => {
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
 
     await dialogButton(wrapper, 'Cancel').trigger('click')
 
@@ -282,7 +302,7 @@ describe('deleting an upload', () => {
   })
 
   it('closes on Escape without deleting', async () => {
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
@@ -294,7 +314,7 @@ describe('deleting an upload', () => {
   it('shows a spinner on the button while the server deletes, then removes the row', async () => {
     let finish!: () => void
     vi.mocked(api.delete).mockReturnValue(new Promise((resolve) => (finish = () => resolve({ data: '' }))))
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
 
     await dialogButton(wrapper, 'Delete').trigger('click')
 
@@ -309,12 +329,12 @@ describe('deleting an upload', () => {
     await flushPromises()
 
     expect(dialog(wrapper).exists()).toBe(false)
-    expect(wrapper.text()).toContain('No uploads yet.')
+    expect(wrapper.text()).toContain('Nothing in progress.')
   })
 
   it('cannot be dismissed while deleting', async () => {
     vi.mocked(api.delete).mockReturnValue(new Promise(() => {}))
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
     await dialogButton(wrapper, 'Delete').trigger('click')
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
@@ -327,7 +347,7 @@ describe('deleting an upload', () => {
     vi.mocked(api.delete)
       .mockRejectedValueOnce(new AxiosError('Network Error', 'ERR_NETWORK'))
       .mockResolvedValueOnce({ data: '' })
-    const wrapper = await mountWithReadyUpload()
+    const wrapper = await mountWithInterruptedUpload()
 
     await dialogButton(wrapper, 'Delete').trigger('click')
     await flushPromises()
@@ -338,7 +358,7 @@ describe('deleting an upload', () => {
     await dialogButton(wrapper, 'Delete').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('No uploads yet.')
+    expect(wrapper.text()).toContain('Nothing in progress.')
   })
 
   it('removes a failed upload after confirming', async () => {
@@ -353,7 +373,7 @@ describe('deleting an upload', () => {
     await flushPromises()
 
     expect(api.delete).toHaveBeenCalledWith('/uploads/server-4')
-    expect(wrapper.text()).toContain('No uploads yet.')
+    expect(wrapper.text()).toContain('Nothing in progress.')
   })
 
   it('asks to stop an upload that is still sending', async () => {
@@ -373,6 +393,26 @@ describe('deleting an upload', () => {
     expect(dialogButton(wrapper, 'Stop upload').exists()).toBe(true)
   })
 
+  it('stops and deletes an upload the server is still transcribing', async () => {
+    get.mockResolvedValue({
+      data: { data: [resource({ id: 'server-8', name: 'stuck.mp4', status: 'transcribing', progress: 95 })] },
+    })
+    vi.mocked(api.delete).mockResolvedValue({ data: '' })
+    const wrapper = await mountView()
+
+    await wrapper.get('button[aria-label="Stop and delete"]').trigger('click')
+    expect(dialog(wrapper).text()).toContain('Stop processing?')
+    expect(dialog(wrapper).text()).toContain(
+      `Processing of "stuck.mp4" will stop and the file will be deleted. This can't be undone.`,
+    )
+    expect(dialogButton(wrapper, 'Keep going').exists()).toBe(true)
+    await dialogButton(wrapper, 'Stop and delete').trigger('click')
+    await flushPromises()
+
+    expect(api.delete).toHaveBeenCalledWith('/uploads/server-8')
+    expect(wrapper.text()).toContain('Nothing in progress.')
+  })
+
   it('removes a file that never reached the server without asking', async () => {
     const wrapper = await mountView()
     await choose(wrapper, [fileOf('notes.txt')])
@@ -383,6 +423,123 @@ describe('deleting an upload', () => {
     expect(dialog(wrapper).exists()).toBe(false)
     expect(wrapper.text()).not.toContain('notes.txt')
     expect(api.delete).not.toHaveBeenCalled()
+  })
+})
+
+describe('ready subtitles', () => {
+  const dialog = (wrapper: Awaited<ReturnType<typeof mountView>>) => wrapper.find('[role="dialog"]')
+  const dialogButton = (wrapper: Awaited<ReturnType<typeof mountView>>, name: string) =>
+    dialog(wrapper).findAll('button').find((button) => button.text() === name)!
+
+  async function mountWithReady(...overrides: Partial<UploadResource>[]) {
+    get.mockResolvedValueOnce({
+      data: {
+        data: (overrides.length ? overrides : [{}]).map((override, index) =>
+          resource({
+            id: `server-${index + 1}`,
+            download_url: `http://api.test/uploads/server-${index + 1}/subtitles`,
+            ...override,
+          }),
+        ),
+      },
+    })
+    return mountView()
+  }
+
+  it('opens a dialog asking to download the subtitles', async () => {
+    const wrapper = await mountWithReady({ subtitle_format: 'both' })
+
+    expect(dialog(wrapper).text()).toContain('Your subtitles are ready')
+    expect(dialog(wrapper).text()).toContain('product-demo.mov')
+    expect(dialogButton(wrapper, 'Download SRT + VTT (.zip)').exists()).toBe(true)
+  })
+
+  it('cannot be closed with Escape or a click outside', async () => {
+    const wrapper = await mountWithReady()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    dialog(wrapper).element.parentElement!.click()
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(true)
+  })
+
+  it('downloads the file, deletes it from the server and closes', async () => {
+    const wrapper = await mountWithReady()
+    get.mockResolvedValueOnce({ data: new Blob(['subtitles']) })
+    vi.mocked(api.delete).mockResolvedValue({ data: '' })
+
+    await dialogButton(wrapper, 'Download SRT').trigger('click')
+    await flushPromises()
+
+    expect(get).toHaveBeenLastCalledWith('http://api.test/uploads/server-1/subtitles', { responseType: 'blob' })
+    expect(URL.createObjectURL).toHaveBeenCalled()
+    expect(api.delete).toHaveBeenCalledWith('/uploads/server-1')
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('stays open with the error when the download fails', async () => {
+    const wrapper = await mountWithReady()
+    get.mockRejectedValueOnce(new AxiosError('Network Error', 'ERR_NETWORK'))
+
+    await dialogButton(wrapper, 'Download SRT').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).get('[role="alert"]').text()).toBe(
+      'The subtitles could not be downloaded. Please try again.',
+    )
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('shows the next ready upload after the first is downloaded', async () => {
+    const wrapper = await mountWithReady(
+      { name: 'second.mp4', expires_at: '2026-10-20T18:30:00.000000Z' },
+      { name: 'first.mp4', expires_at: '2026-10-20T18:10:00.000000Z' },
+    )
+    get.mockResolvedValueOnce({ data: new Blob(['x']) })
+    vi.mocked(api.delete).mockResolvedValue({ data: '' })
+    expect(dialog(wrapper).text()).toContain('first.mp4')
+
+    await dialogButton(wrapper, 'Download SRT').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).text()).toContain('second.mp4')
+  })
+
+  it('discards the subtitles only after a second confirmation', async () => {
+    const wrapper = await mountWithReady()
+    vi.mocked(api.delete).mockResolvedValue({ data: '' })
+
+    await dialogButton(wrapper, 'Discard without saving').trigger('click')
+    expect(dialog(wrapper).text()).toContain("Delete these subtitles without saving them? This can't be undone.")
+    expect(api.delete).not.toHaveBeenCalled()
+
+    await dialogButton(wrapper, 'Discard').trigger('click')
+    await flushPromises()
+
+    expect(api.delete).toHaveBeenCalledWith('/uploads/server-1')
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('goes back to the download button when discarding is called off', async () => {
+    const wrapper = await mountWithReady()
+
+    await dialogButton(wrapper, 'Discard without saving').trigger('click')
+    await dialogButton(wrapper, 'Keep').trigger('click')
+
+    expect(dialogButton(wrapper, 'Download SRT').exists()).toBe(true)
+    expect(api.delete).not.toHaveBeenCalled()
+  })
+
+  it('shows why discarding failed and stays open', async () => {
+    const wrapper = await mountWithReady()
+    vi.mocked(api.delete).mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'))
+
+    await dialogButton(wrapper, 'Discard without saving').trigger('click')
+    await dialogButton(wrapper, 'Discard').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).get('[role="alert"]').text()).toBe('Network Error')
   })
 })
 
@@ -412,7 +569,7 @@ describe('resuming an interrupted upload', () => {
     await pickToResume(wrapper, picked)
 
     expect(resumeUpload).toHaveBeenCalledWith(picked, 'server-5', expect.anything())
-    expect(wrapper.text().replace(/\s+/g, ' ')).toContain('Ready · English · SRT · 10 B')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('Your subtitles are ready')
   })
 
   it('explains which file to pick when the user picks a different one', async () => {

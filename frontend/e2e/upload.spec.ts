@@ -22,29 +22,140 @@ async function chooseWav(page: Page, name = 'interview.wav', seconds = 1) {
   await fileInput(page).setInputFiles({ name, mimeType: 'audio/wav', buffer: wavBuffer(seconds) })
 }
 
-test.describe('recent uploads', () => {
-  test('lists finished and interrupted uploads from the API', async ({ page }) => {
+function readyDialog(page: Page) {
+  return page.getByRole('dialog', { name: 'Your subtitles are ready' })
+}
+
+test.describe('in progress list', () => {
+  test('lists uploads still being processed or interrupted, with no history', async ({ page }) => {
     api.uploads = [
-      fakeUpload({ id: 'a', name: 'product-demo.mov', language: 'ja', subtitle_format: 'vtt' }),
+      fakeUpload({ id: 'a', name: 'product-demo.mov', status: 'transcribing', progress: 40 }),
       fakeUpload({ id: 'b', name: 'half-done.mp4', status: 'uploading', completed_at: null }),
     ]
 
     await page.goto('/')
 
-    await expect(uploadsList(page).getByText('Ready · Japanese · VTT · 1.2 MB')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'In progress' })).toBeVisible()
+    await expect(uploadsList(page).getByText('Transcribing · 40%')).toBeVisible()
     await expect(uploadsList(page).getByText('Upload was interrupted. Resume to continue where it stopped.')).toBeVisible()
+    await expect(page.getByText('View all')).toHaveCount(0)
+    await expect(page.getByText('My files')).toHaveCount(0)
   })
 
-  test('downloads each subtitle file under the media name', async ({ page }) => {
+  test('shows the empty state when nothing is in progress', async ({ page }) => {
+    await page.goto('/')
+
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
+  })
+
+  test('shows an error when the API is unavailable', async ({ page }) => {
+    api.onList = (route) => route.fulfill({ status: 500, body: '' })
+
+    await page.goto('/')
+
+    await expect(page.getByText('Request failed with status code 500')).toBeVisible()
+  })
+
+  test('deletes an interrupted upload after confirming, showing progress on the button', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'stopped', name: 'interview.mp4', status: 'uploading', completed_at: null })]
+    let finishDelete!: () => void
+    const deleted = new Promise<void>((resolve) => (finishDelete = resolve))
+    await page.route(/\/api\/uploads\/stopped$/, async (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback()
+      await deleted
+      api.deletions.push('stopped')
+      return route.fulfill({ status: 204 })
+    })
+    await page.goto('/')
+
+    await uploadsList(page).getByRole('button', { name: 'Remove' }).click()
+    const dialog = page.getByRole('alertdialog', { name: 'Delete this upload?' })
+    await expect(dialog).toContainText(`"interview.mp4" and everything uploaded so far will be deleted.`)
+    await dialog.getByRole('button', { name: 'Delete' }).click()
+
+    await expect(dialog.getByRole('button', { name: 'Deleting…' })).toBeDisabled()
+    await expect(uploadsList(page).getByText('interview.mp4')).toBeVisible()
+    finishDelete()
+
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
+    await expect(dialog).toBeHidden()
+    expect(api.deletions).toEqual(['stopped'])
+  })
+
+  test('keeps the upload when the confirmation is cancelled', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'kept', status: 'uploading', completed_at: null })]
+    await page.goto('/')
+
+    await uploadsList(page).getByRole('button', { name: 'Remove' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Cancel' }).click()
+
+    await expect(page.getByRole('alertdialog')).toBeHidden()
+    await expect(uploadsList(page).getByText('product-demo.mov')).toBeVisible()
+    expect(api.deletions).toEqual([])
+  })
+
+  test('stops and deletes an upload that is stuck in transcription', async ({ page }) => {
+    const stuck = fakeUpload({ id: 'stuck', name: 'stuck.mp4', status: 'transcribing', progress: 95 })
+    api.uploads = [stuck]
+    // Polling never moves it on
+    await page.route(/\/api\/uploads\/stuck$/, (route) =>
+      route.request().method() === 'GET' ? api.json(route, 200, { data: stuck }) : route.fallback(),
+    )
+    await page.goto('/')
+
+    await uploadsList(page).getByRole('button', { name: 'Stop and delete' }).click()
+    await page.getByRole('alertdialog', { name: 'Stop processing?' }).getByRole('button', { name: 'Stop and delete' }).click()
+
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
+    expect(api.deletions).toEqual(['stuck'])
+  })
+
+  test('removes a failed upload from the list and the server after confirming', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'gone', status: 'failed', error: 'No speech was detected in this file.' })]
+    await page.goto('/')
+
+    await uploadsList(page).getByRole('button', { name: 'Remove' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click()
+
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
+    expect(api.deletions).toEqual(['gone'])
+  })
+})
+
+test.describe('ready subtitles', () => {
+  test('asks to download them in a dialog that cannot be dismissed', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'done', name: 'product-demo.mov', language: 'ja' })]
+    await page.goto('/')
+
+    await expect(readyDialog(page)).toContainText('product-demo.mov · Japanese · 1.2 MB')
+    await page.keyboard.press('Escape')
+    await page.mouse.click(5, 5)
+
+    await expect(readyDialog(page)).toBeVisible()
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
+  })
+
+  test('downloads the file under the media name, then deletes it from the server', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'done', name: 'Team Interview.mov' })]
+    await page.goto('/')
+
+    const download = page.waitForEvent('download')
+    await readyDialog(page).getByRole('button', { name: 'Download SRT' }).click()
+
+    expect((await download).suggestedFilename()).toBe('Team Interview.srt')
+    await expect(readyDialog(page)).toBeHidden()
+    expect(api.deletions).toEqual(['done'])
+  })
+
+  test('downloads both formats as one zip', async ({ page }) => {
     api.uploads = [fakeUpload({ id: 'done', name: 'Team Interview.mov', subtitle_format: 'both' })]
     await page.goto('/')
 
-    for (const format of ['SRT', 'VTT']) {
-      const download = page.waitForEvent('download')
-      await uploadsList(page).getByRole('button', { name: `Download ${format}` }).click()
+    const download = page.waitForEvent('download')
+    await readyDialog(page).getByRole('button', { name: 'Download SRT + VTT (.zip)' }).click()
 
-      expect((await download).suggestedFilename()).toBe(`Team Interview.${format.toLowerCase()}`)
-    }
+    expect((await download).suggestedFilename()).toBe('Team Interview.zip')
+    await expect.poll(() => api.deletions).toEqual(['done'])
   })
 
   test('shows a spinner on the button while the file downloads', async ({ page }) => {
@@ -57,88 +168,50 @@ test.describe('recent uploads', () => {
     }
     await page.goto('/')
 
-    await uploadsList(page).getByRole('button', { name: 'Download' }).click()
+    await readyDialog(page).getByRole('button', { name: 'Download SRT' }).click()
 
-    const busy = uploadsList(page).getByRole('button', { name: 'Downloading…' })
+    const busy = readyDialog(page).getByRole('button', { name: 'Downloading…' })
     await expect(busy).toBeDisabled()
     await expect(busy.locator('[data-test="spinner"]')).toBeVisible()
     const download = page.waitForEvent('download')
     release()
     expect((await download).suggestedFilename()).toBe('product-demo.srt')
-    await expect(uploadsList(page).getByRole('button', { name: 'Download' })).toBeEnabled()
+    await expect(readyDialog(page)).toBeHidden()
   })
 
-  test('says so when a subtitle file cannot be downloaded', async ({ page }) => {
+  test('keeps the subtitles and says so when the download fails', async ({ page }) => {
     api.uploads = [fakeUpload({ id: 'done' })]
-    api.onSubtitle = (route) => route.fulfill({ status: 404 })
+    api.onSubtitle = (route) => route.fulfill({ status: 500 })
     await page.goto('/')
 
-    await uploadsList(page).getByRole('button', { name: 'Download' }).click()
+    await readyDialog(page).getByRole('button', { name: 'Download SRT' }).click()
 
-    await expect(uploadsList(page).getByRole('alert')).toHaveText('The SRT file could not be downloaded. Please try again.')
-  })
-
-  test('shows the empty state when there are no uploads', async ({ page }) => {
-    await page.goto('/')
-
-    await expect(page.getByText('No uploads yet.')).toBeVisible()
-  })
-
-  test('shows an error when the API is unavailable', async ({ page }) => {
-    api.onList = (route) => route.fulfill({ status: 500, body: '' })
-
-    await page.goto('/')
-
-    await expect(page.getByText('Request failed with status code 500')).toBeVisible()
-  })
-
-  test('deletes a ready upload after confirming, showing progress on the button', async ({ page }) => {
-    api.uploads = [fakeUpload({ id: 'finished', name: 'interview.mp4' })]
-    let finishDelete!: () => void
-    const deleted = new Promise<void>((resolve) => (finishDelete = resolve))
-    await page.route(/\/api\/uploads\/finished$/, async (route) => {
-      if (route.request().method() !== 'DELETE') return route.fallback()
-      await deleted
-      api.deletions.push('finished')
-      return route.fulfill({ status: 204 })
-    })
-    await page.goto('/')
-
-    await uploadsList(page).getByRole('button', { name: 'Delete upload' }).click()
-    const dialog = page.getByRole('alertdialog', { name: 'Delete this upload?' })
-    await expect(dialog).toContainText(`"interview.mp4" and its subtitles will be deleted.`)
-    await dialog.getByRole('button', { name: 'Delete' }).click()
-
-    await expect(dialog.getByRole('button', { name: 'Deleting…' })).toBeDisabled()
-    await expect(uploadsList(page).getByText('interview.mp4')).toBeVisible()
-    finishDelete()
-
-    await expect(page.getByText('No uploads yet.')).toBeVisible()
-    await expect(dialog).toBeHidden()
-    expect(api.deletions).toEqual(['finished'])
-  })
-
-  test('keeps the upload when the confirmation is cancelled', async ({ page }) => {
-    api.uploads = [fakeUpload({ id: 'kept' })]
-    await page.goto('/')
-
-    await uploadsList(page).getByRole('button', { name: 'Delete upload' }).click()
-    await page.getByRole('alertdialog').getByRole('button', { name: 'Cancel' }).click()
-
-    await expect(page.getByRole('alertdialog')).toBeHidden()
-    await expect(uploadsList(page).getByText('product-demo.mov')).toBeVisible()
+    await expect(readyDialog(page).getByRole('alert')).toHaveText('The subtitles could not be downloaded. Please try again.')
     expect(api.deletions).toEqual([])
   })
 
-  test('removes a failed upload from the list and the server after confirming', async ({ page }) => {
-    api.uploads = [fakeUpload({ id: 'gone', status: 'failed', error: 'No speech was detected in this file.' })]
+  test('discards the subtitles without saving after a second confirmation', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'unwanted' })]
     await page.goto('/')
 
-    await uploadsList(page).getByRole('button', { name: 'Remove' }).click()
-    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click()
+    await readyDialog(page).getByRole('button', { name: 'Discard without saving' }).click()
+    await readyDialog(page).getByRole('button', { name: 'Discard', exact: true }).click()
 
-    await expect(page.getByText('No uploads yet.')).toBeVisible()
-    expect(api.deletions).toEqual(['gone'])
+    await expect(readyDialog(page)).toBeHidden()
+    expect(api.deletions).toEqual(['unwanted'])
+  })
+
+  test('shows the next ready upload once the first is downloaded', async ({ page }) => {
+    api.uploads = [
+      fakeUpload({ id: 'new', name: 'second.mp4', expires_at: '2026-10-20T18:30:00.000000Z' }),
+      fakeUpload({ id: 'old', name: 'first.mp4', expires_at: '2026-10-20T18:10:00.000000Z' }),
+    ]
+    await page.goto('/')
+
+    await expect(readyDialog(page)).toContainText('first.mp4')
+    await readyDialog(page).getByRole('button', { name: 'Download SRT' }).click()
+
+    await expect(readyDialog(page)).toContainText('second.mp4')
   })
 })
 
@@ -209,10 +282,11 @@ test.describe('uploading', () => {
     await page.getByRole('button', { name: 'Generate subtitles' }).click()
 
     await expect(uploadsList(page).getByText('Transcribing · 50%')).toBeVisible()
-    await expect(uploadsList(page).getByText('Ready · Japanese · VTT · 7.9 KB')).toBeVisible()
+    await expect(readyDialog(page)).toContainText('interview.wav · Japanese · 7.9 KB')
     const download = page.waitForEvent('download')
-    await uploadsList(page).getByRole('button', { name: 'Download' }).click()
+    await readyDialog(page).getByRole('button', { name: 'Download VTT' }).click()
     expect((await download).suggestedFilename()).toBe('interview.vtt')
+    await expect.poll(() => api.deletions).toEqual(['upload-1'])
     expect(api.startRequests).toEqual([
       {
         name: 'interview.wav',
@@ -265,7 +339,7 @@ test.describe('uploading', () => {
 
     await page.getByRole('button', { name: 'Generate subtitles' }).click()
 
-    await expect(uploadsList(page).getByText('Ready ·')).toBeVisible({ timeout: 10_000 })
+    await expect(readyDialog(page)).toBeVisible({ timeout: 10_000 })
     expect(api.chunkIndexes).toHaveLength(3)
     expect([...new Set(api.chunkIndexes)].toSorted()).toEqual([0, 1])
   })
@@ -280,7 +354,7 @@ test.describe('uploading', () => {
     await page.getByRole('button', { name: 'Cancel upload' }).click()
     await page.getByRole('alertdialog', { name: 'Stop this upload?' }).getByRole('button', { name: 'Stop upload' }).click()
 
-    await expect(page.getByText('No uploads yet.')).toBeVisible()
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
     await expect.poll(() => api.deletions).toEqual(['upload-1'])
   })
 
@@ -293,7 +367,9 @@ test.describe('uploading', () => {
 
     await page.getByRole('button', { name: 'Generate subtitles' }).click()
 
-    await expect(uploadsList(page).getByText('Ready ·')).toHaveCount(2, { timeout: 10_000 })
+    await expect(readyDialog(page)).toContainText('first.wav', { timeout: 10_000 })
+    await readyDialog(page).getByRole('button', { name: 'Download SRT' }).click()
+    await expect(readyDialog(page)).toContainText('second.wav', { timeout: 10_000 })
     expect(api.startRequests.map((request) => request.name)).toEqual(['first.wav', 'second.wav'])
   })
 
@@ -317,7 +393,7 @@ test.describe('uploading', () => {
     await uploadsList(page).getByRole('button', { name: 'Resume' }).click()
     await (await chooser).setFiles(file)
 
-    await expect(uploadsList(page).getByText('Ready ·')).toBeVisible({ timeout: 10_000 })
+    await expect(readyDialog(page)).toBeVisible({ timeout: 10_000 })
     expect(api.chunkIndexes).toEqual([1])
     expect(api.startRequests).toHaveLength(0)
     expect(api.completions).toEqual(['half-done'])

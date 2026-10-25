@@ -9,6 +9,11 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${UNITS[exponent]}`
 }
 
+/** "2026-10-25T18:30:00Z" -> "6:30 PM" (or "18:30"), in the user's time zone and locale */
+export function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+}
+
 export function formatDuration(totalSeconds: number): string {
   const seconds = Math.floor(totalSeconds % 60)
   const minutes = Math.floor((totalSeconds / 60) % 60)

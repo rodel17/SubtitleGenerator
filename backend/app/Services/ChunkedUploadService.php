@@ -195,17 +195,64 @@ class ChunkedUploadService
     }
 
     /**
-     * Delete the original media file but keep the transcript and subtitles.
-     * A null `path` afterwards means the media is gone.
+     * Delete everything except the subtitle files: chunks, media, audio and transcript.
+     * Runs as soon as the subtitles are written. A null `path` afterwards means the media is gone.
      */
-    public function deleteMedia(Upload $upload): void
+    public function deleteWorkingFiles(Upload $upload): void
     {
-        if ($upload->path === null) {
-            return;
+        $disk = $this->disk();
+
+        $disk->deleteDirectory($this->chunkDirectory($upload));
+        $disk->deleteDirectory($upload->audioDirectory());
+        $disk->delete($upload->transcriptPath());
+
+        if ($upload->path !== null) {
+            $disk->delete($upload->path);
+            $upload->update(['path' => null]);
+        }
+    }
+
+    /**
+     * Delete files whose upload no longer exists, e.g. written by a job that was
+     * still running when the user deleted the upload. Returns how many were deleted.
+     */
+    public function deleteOrphanedFiles(): int
+    {
+        $disk = $this->disk();
+        $deleted = 0;
+
+        // chunks/{id}/N and audio/{id}/NNNN.wav are directories named after the upload
+        foreach (['chunks', 'audio'] as $parent) {
+            $directories = collect($disk->directories($parent))->keyBy(fn (string $path): string => basename($path));
+
+            foreach ($this->unknownIds($directories->keys()->all()) as $id) {
+                $disk->deleteDirectory($directories[$id]);
+                $deleted++;
+            }
         }
 
-        $this->disk()->delete($upload->path);
-        $upload->update(['path' => null]);
+        // uploads/{id}.ext, transcripts/{id}.json and subtitles/{id}.srt|vtt are files named after it
+        foreach (['uploads', 'transcripts', 'subtitles'] as $parent) {
+            $files = collect($disk->files($parent))->groupBy(fn (string $path): string => pathinfo($path, PATHINFO_FILENAME));
+
+            foreach ($this->unknownIds($files->keys()->all()) as $id) {
+                $disk->delete($files[$id]->all());
+                $deleted += $files[$id]->count();
+            }
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * @param  list<string>  $ids
+     * @return list<string>
+     */
+    private function unknownIds(array $ids): array
+    {
+        $known = Upload::query()->whereKey($ids)->pluck('id')->all();
+
+        return array_values(array_diff($ids, $known));
     }
 
     /**

@@ -29,6 +29,7 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     status: 'uploading',
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: null,
+    expires_at: null,
     ...overrides,
   }
 }

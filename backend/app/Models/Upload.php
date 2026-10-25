@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
@@ -38,7 +39,14 @@ class Upload extends Model
         'error',
         'path',
         'completed_at',
+        'finished_at',
     ];
+
+    /**
+     * Uploads still not ready or failed after this long are assumed stuck (a worker
+     * died without marking them failed) and deleted with everything else.
+     */
+    private const STUCK_AFTER_HOURS = 24;
 
     /**
      * The model's default values for attributes.
@@ -63,6 +71,7 @@ class Upload extends Model
             'total_chunks' => 'integer',
             'status' => UploadStatus::class,
             'completed_at' => 'datetime',
+            'finished_at' => 'datetime',
         ];
     }
 
@@ -103,12 +112,37 @@ class Upload extends Model
     }
 
     /**
-     * Stop processing and record a reason the user can read.
+     * The subtitle files are written; start the clock for deleting them if nobody downloads them.
+     */
+    public function markReady(): void
+    {
+        $this->update(['finished_at' => now()]);
+        $this->transitionTo(UploadStatus::Ready);
+    }
+
+    /**
+     * Stop processing and record a reason the user can read. Nothing is kept
+     * for a failed upload: trying again means uploading the file again.
      */
     public function markFailed(string $error): void
     {
-        $this->update(['status' => UploadStatus::Failed, 'error' => Str::limit($error, 497)]);
+        app(ChunkedUploadService::class)->deleteFiles($this);
+
+        $this->update([
+            'status' => UploadStatus::Failed,
+            'error' => Str::limit($error, 497),
+            'path' => null,
+            'finished_at' => now(),
+        ]);
         Cache::forget($this->progressCacheKey());
+    }
+
+    /**
+     * When the upload is deleted if it is never downloaded; null while still processing.
+     */
+    public function expiresAt(): ?Carbon
+    {
+        return $this->finished_at?->copy()->addHours(config('uploads.retention_hours'));
     }
 
     /**
@@ -156,15 +190,23 @@ class Upload extends Model
     }
 
     /**
-     * Incomplete uploads that were abandoned long enough ago to discard.
+     * Uploads to delete: finished (ready or failed) but never downloaded within
+     * the retention window, never completed within it, or stuck in processing.
      *
      * @return Builder<static>
      */
     public function prunable(): Builder
     {
+        $cutoff = now()->subHours(config('uploads.retention_hours'));
+
         return static::query()
-            ->where('status', UploadStatus::Uploading)
-            ->where('created_at', '<=', now()->subHours(config('uploads.abandoned_after_hours')));
+            ->where('finished_at', '<=', $cutoff)
+            ->orWhere(fn (Builder $query) => $query
+                ->where('status', UploadStatus::Uploading)
+                ->where('created_at', '<=', $cutoff))
+            ->orWhere(fn (Builder $query) => $query
+                ->whereNull('finished_at')
+                ->where('created_at', '<=', now()->subHours(self::STUCK_AFTER_HOURS)));
     }
 
     /**

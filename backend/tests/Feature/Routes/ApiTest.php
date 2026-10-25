@@ -20,7 +20,7 @@ it('returns 401 JSON for every protected route without a token', function (strin
     'list chunks' => ['GET', '/api/uploads/{upload}/chunks'],
     'send chunk' => ['POST', '/api/uploads/{upload}/chunks'],
     'complete upload' => ['POST', '/api/uploads/{upload}/completion'],
-    'download subtitles' => ['GET', '/api/uploads/{upload}/subtitles/srt'],
+    'download subtitles' => ['GET', '/api/uploads/{upload}/subtitles'],
 ]);
 
 it('returns 401 JSON even when the client does not ask for JSON', function () {

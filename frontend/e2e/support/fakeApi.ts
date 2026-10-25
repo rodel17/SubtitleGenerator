@@ -14,15 +14,13 @@ export interface FakeUpload {
   status: 'uploading' | 'assembling' | 'uploaded' | 'transcribing' | 'ready' | 'failed'
   progress: number | null
   error: string | null
-  subtitles?: Partial<Record<'srt' | 'vtt', string>>
+  download_url?: string
   created_at: string
   completed_at: string | null
+  expires_at: string | null
 }
 
-function subtitleLinks(id: string, format: FakeUpload['subtitle_format']) {
-  const formats = format === 'both' ? (['srt', 'vtt'] as const) : [format]
-  return Object.fromEntries(formats.map((f) => [f, `http://localhost:8000/api/uploads/${id}/subtitles/${f}`]))
-}
+const downloadUrl = (id: string) => `http://localhost:8000/api/uploads/${id}/subtitles`
 
 export function fakeUpload(overrides: Partial<FakeUpload> = {}): FakeUpload {
   const upload: FakeUpload = {
@@ -41,11 +39,12 @@ export function fakeUpload(overrides: Partial<FakeUpload> = {}): FakeUpload {
     error: null,
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
+    expires_at: null,
     ...overrides,
   }
 
-  if (upload.status === 'ready' && !upload.subtitles) {
-    upload.subtitles = subtitleLinks(upload.id, upload.subtitle_format)
+  if (upload.status === 'ready' && !upload.download_url) {
+    upload.download_url = downloadUrl(upload.id)
   }
 
   return upload
@@ -152,11 +151,17 @@ export class FakeApi {
       return this.json(route, 202, { data: upload })
     }
 
-    const subtitle = path.match(/^\/uploads\/([^/]+)\/subtitles\/(srt|vtt)$/)
+    const subtitle = path.match(/^\/uploads\/([^/]+)\/subtitles$/)
     if (method === 'GET' && subtitle) {
       if (this.onSubtitle) return this.onSubtitle(route, request)
-      const body = subtitle[2] === 'vtt' ? 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n' : '1\n00:00:00,000 --> 00:00:01,000\nHello\n'
-      return route.fulfill({ status: 200, contentType: 'text/plain', body })
+      const upload = this.uploads.find((candidate) => candidate.id === subtitle[1])
+      if (!upload) return route.fulfill({ status: 404 })
+      const body = {
+        srt: '1\n00:00:00,000 --> 00:00:01,000\nHello\n',
+        vtt: 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n',
+        both: 'PK (a zip of both files)',
+      }[upload.subtitle_format]
+      return route.fulfill({ status: 200, contentType: 'application/octet-stream', body })
     }
 
     const single = path.match(/^\/uploads\/([^/]+)$/)
@@ -184,7 +189,8 @@ export class FakeApi {
       Object.assign(upload, {
         status: 'ready',
         progress: null,
-        subtitles: subtitleLinks(upload.id, upload.subtitle_format),
+        download_url: downloadUrl(upload.id),
+        expires_at: '2026-10-20T18:05:00.000000Z',
       })
     }
   }

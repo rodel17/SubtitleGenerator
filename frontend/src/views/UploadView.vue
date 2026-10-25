@@ -4,6 +4,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FileDropzone from '@/components/upload/FileDropzone.vue'
 import FormatToggle from '@/components/upload/FormatToggle.vue'
 import SelectedFilePreview from '@/components/upload/SelectedFilePreview.vue'
+import SubtitlesReadyDialog from '@/components/upload/SubtitlesReadyDialog.vue'
 import UploadListItem from '@/components/upload/UploadListItem.vue'
 import { formatBytes } from '@/lib/format'
 import { localId } from '@/lib/id'
@@ -13,7 +14,8 @@ import {
   isAcceptedFile,
   LANGUAGES,
   MAX_FILE_SIZE,
-  MEDIA_RETENTION_HOURS,
+  RETENTION_HOURS,
+  SERVER_PROCESSING_STATUSES,
   type SubtitleFormat,
   type UploadItem,
 } from '@/types/upload'
@@ -82,12 +84,19 @@ const removalCopy = computed(() => {
     }
   }
 
+  if (SERVER_PROCESSING_STATUSES.includes(item.status)) {
+    return {
+      title: 'Stop processing?',
+      message: `Processing of "${item.name}" will stop and the file will be deleted. This can't be undone.`,
+      confirmLabel: 'Stop and delete',
+      busyLabel: 'Stopping…',
+      cancelLabel: 'Keep going',
+    }
+  }
+
   return {
     title: 'Delete this upload?',
-    message:
-      item.status === 'ready'
-        ? `"${item.name}" and its subtitles will be deleted. This can't be undone.`
-        : `"${item.name}" and everything uploaded so far will be deleted. This can't be undone.`,
+    message: `"${item.name}" and everything uploaded so far will be deleted. This can't be undone.`,
     confirmLabel: 'Delete',
     busyLabel: 'Deleting…',
     cancelLabel: 'Cancel',
@@ -127,6 +136,24 @@ async function confirmRemove() {
 function cancelRemove() {
   pendingRemoval.value = null
   removalError.value = null
+}
+
+// Ready subtitles are not listed; the dialog asks for them to be downloaded (or discarded)
+const listedItems = computed(() => uploads.items.filter((item) => item.status !== 'ready'))
+const isDiscarding = ref(false)
+const discardError = ref<string | null>(null)
+
+async function discard(id: string) {
+  isDiscarding.value = true
+  discardError.value = null
+
+  try {
+    await uploads.remove(id)
+  } catch (error) {
+    discardError.value = error instanceof Error ? error.message : 'Could not discard the subtitles.'
+  } finally {
+    isDiscarding.value = false
+  }
 }
 
 // After a reload the browser no longer has the file, so the user picks it again
@@ -171,8 +198,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
     <div class="flex flex-col gap-2">
       <h1 class="text-[28px] font-bold tracking-tight">Upload media</h1>
       <p class="text-[15px] leading-normal text-slate-600">
-        Add a video or audio file and we'll transcribe it into a subtitle track you can edit and
-        download.
+        Add a video or audio file and we'll transcribe it into a subtitle track you can download.
       </p>
     </div>
 
@@ -216,8 +242,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
         class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5"
       >
         <span class="text-[13px] text-slate-600">
-          Files are processed privately. Original media is deleted {{ MEDIA_RETENTION_HOURS }} hours
-          after processing; subtitles stay until you delete them.
+          Files are processed privately and deleted from our servers as soon as you download the
+          subtitles, or {{ RETENTION_HOURS }} hours after processing if you don't.
         </span>
         <div class="flex gap-2.5">
           <button
@@ -241,23 +267,19 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
     </section>
 
     <section class="flex flex-col gap-3">
-      <div class="flex items-baseline justify-between gap-3">
-        <h2 class="text-base font-semibold">Recent uploads</h2>
-        <a href="#" class="text-sm font-medium text-accent hover:text-accent-hover">View all</a>
-      </div>
+      <h2 class="text-base font-semibold">In progress</h2>
 
       <ul
-        v-if="uploads.items.length"
+        v-if="listedItems.length"
         class="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white"
       >
         <UploadListItem
-          v-for="item in uploads.items"
+          v-for="item in listedItems"
           :key="item.id"
           :item="item"
           @cancel="requestRemove"
           @remove="requestRemove"
           @resume="resume"
-          @download="uploads.download"
         />
       </ul>
       <p
@@ -266,7 +288,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
         :class="uploads.loadError ? 'text-red-700' : 'text-slate-600'"
       >
         {{
-          uploads.isLoading ? 'Loading uploads…' : (uploads.loadError ?? 'No uploads yet.')
+          uploads.isLoading ? 'Loading uploads…' : (uploads.loadError ?? 'Nothing in progress.')
         }}
       </p>
       <input
@@ -290,6 +312,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
       :error="removalError"
       @confirm="confirmRemove"
       @cancel="cancelRemove"
+    />
+
+    <SubtitlesReadyDialog
+      v-if="uploads.nextReady"
+      :item="uploads.nextReady"
+      :discarding="isDiscarding"
+      :discard-error="discardError"
+      @download="uploads.download"
+      @discard="discard"
     />
   </main>
 </template>

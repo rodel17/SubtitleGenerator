@@ -12,11 +12,11 @@ beforeEach(function () {
     Storage::fake('local');
 });
 
-it('downloads the subtitle file named after the original media', function (string $format, string $contentType) {
-    $upload = Upload::factory()->for($this->user)->ready()->create(['original_name' => 'Team Interview.mp4', 'subtitle_format' => 'both']);
+it('downloads the one subtitle file, named after the original media', function (string $format, string $contentType) {
+    $upload = Upload::factory()->for($this->user)->ready()->create(['original_name' => 'Team Interview.mp4', 'subtitle_format' => $format]);
     Storage::disk('local')->put($upload->subtitlePath($format), "subtitle content\n");
 
-    $response = $this->get("/api/uploads/{$upload->id}/subtitles/{$format}");
+    $response = $this->get("/api/uploads/{$upload->id}/subtitles");
 
     $response->assertOk()
         ->assertDownload("Team Interview.{$format}")
@@ -27,11 +27,30 @@ it('downloads the subtitle file named after the original media', function (strin
     'vtt' => ['vtt', 'text/vtt; charset=UTF-8'],
 ]);
 
+it('downloads both files in one zip when both formats were requested', function () {
+    $upload = Upload::factory()->for($this->user)->ready()->create(['original_name' => 'Team Interview.mp4', 'subtitle_format' => 'both']);
+    Storage::disk('local')->put($upload->subtitlePath('srt'), "srt content\n");
+    Storage::disk('local')->put($upload->subtitlePath('vtt'), "WEBVTT\n");
+
+    $response = $this->get("/api/uploads/{$upload->id}/subtitles");
+
+    $response->assertOk()
+        ->assertDownload('Team Interview.zip')
+        ->assertHeader('Content-Type', 'application/zip');
+
+    $zip = new ZipArchive;
+    $zip->open($response->baseResponse->getFile()->getPathname());
+    expect($zip->numFiles)->toBe(2);
+    expect($zip->getFromName('Team Interview.srt'))->toBe("srt content\n");
+    expect($zip->getFromName('Team Interview.vtt'))->toBe("WEBVTT\n");
+    $zip->close();
+});
+
 it('returns 404 until the upload is ready', function (UploadStatus $status) {
     $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => $status]);
     Storage::disk('local')->put($upload->subtitlePath('srt'), 'x');
 
-    $this->get("/api/uploads/{$upload->id}/subtitles/srt")->assertNotFound();
+    $this->get("/api/uploads/{$upload->id}/subtitles")->assertNotFound();
 })->with([
     'uploading' => UploadStatus::Uploading,
     'assembling' => UploadStatus::Assembling,
@@ -40,29 +59,26 @@ it('returns 404 until the upload is ready', function (UploadStatus $status) {
     'failed' => UploadStatus::Failed,
 ]);
 
-it('returns 404 for a format that was not requested', function () {
-    $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'srt']);
-    Storage::disk('local')->put($upload->subtitlePath('vtt'), 'x');
-
-    $this->get("/api/uploads/{$upload->id}/subtitles/vtt")->assertNotFound();
-});
-
-it('returns 404 when the file is missing from storage', function () {
-    $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'srt']);
-
-    $this->get("/api/uploads/{$upload->id}/subtitles/srt")->assertNotFound();
-});
-
-it('only serves srt and vtt', function (string $format) {
-    $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'srt']);
+it('returns 404 when a requested file is missing from storage', function () {
+    $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'both']);
     Storage::disk('local')->put($upload->subtitlePath('srt'), 'x');
 
-    $this->get("/api/uploads/{$upload->id}/subtitles/{$format}")->assertNotFound();
-})->with(['ass', 'srt.php', '..%2F..%2F.env']);
+    $this->get("/api/uploads/{$upload->id}/subtitles")->assertNotFound();
+});
 
 it("returns 404 for another user's subtitles", function () {
     $upload = Upload::factory()->ready()->create(['subtitle_format' => 'srt']);
     Storage::disk('local')->put($upload->subtitlePath('srt'), 'x');
 
-    $this->get("/api/uploads/{$upload->id}/subtitles/srt")->assertNotFound();
+    $this->get("/api/uploads/{$upload->id}/subtitles")->assertNotFound();
+});
+
+it('leaves the files in place: the client deletes the upload once it has them', function () {
+    $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'srt']);
+    Storage::disk('local')->put($upload->subtitlePath('srt'), 'x');
+
+    $this->get("/api/uploads/{$upload->id}/subtitles")->assertOk();
+
+    $this->assertModelExists($upload);
+    Storage::disk('local')->assertExists($upload->subtitlePath('srt'));
 });

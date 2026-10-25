@@ -38,21 +38,23 @@ export interface UploadItem {
   language?: string
   format?: SubtitleFormat
   error?: string
-  /** Download URL per generated format, once ready */
-  subtitles?: Partial<Record<SubtitleFileFormat, string>>
-  /** Formats whose file is being fetched right now */
-  downloading?: SubtitleFileFormat[]
-  /** Why the last download did not work; the upload itself is still fine */
+  /** Where to download the subtitles, once ready */
+  downloadUrl?: string
+  /** ISO time the server deletes the subtitles if they are never downloaded */
+  expiresAt?: string
+  /** The subtitles are being fetched right now */
+  downloading?: boolean
+  /** Why the last download did not work; the subtitles are still there to try again */
   downloadError?: string
 }
 
-/** A format a subtitle file can be downloaded in ("both" produces one of each) */
-export type SubtitleFileFormat = 'srt' | 'vtt'
-
-/** "Team Interview.mp4" + "srt" -> "Team Interview.srt", as the API names the file */
-export function subtitleFileName(mediaName: string, format: SubtitleFileFormat): string {
+/**
+ * "Team Interview.mp4" + "srt" -> "Team Interview.srt", as the API names the file.
+ * Both formats come as one zip: "Team Interview.zip".
+ */
+export function subtitleFileName(mediaName: string, format: SubtitleFormat): string {
   const dot = mediaName.lastIndexOf('.')
-  return `${dot > 0 ? mediaName.slice(0, dot) : mediaName}.${format}`
+  return `${dot > 0 ? mediaName.slice(0, dot) : mediaName}.${format === 'both' ? 'zip' : format}`
 }
 
 /** Status of an upload as the Laravel API reports it */
@@ -80,10 +82,12 @@ export interface UploadResource {
   /** 0–100 while the server is assembling or transcribing, otherwise null */
   progress: number | null
   error: string | null
-  /** Download URLs, only once the upload is ready */
-  subtitles?: Partial<Record<'srt' | 'vtt', string>>
+  /** Subtitle download (one file, or a zip for both formats), only once the upload is ready */
+  download_url?: string
   created_at: string
   completed_at: string | null
+  /** When a ready or failed upload is deleted if nobody downloads it; null while processing */
+  expires_at: string | null
 }
 
 /** Must match `uploads.allowed_extensions` in backend/config/uploads.php ("ts" = MPEG transport stream) */
@@ -92,8 +96,8 @@ export const ACCEPTED_EXTENSIONS = ['mp4', 'mov', 'mkv', 'ts', 'mp3', 'wav', 'm4
 /** Must match `uploads.max_size` in backend/config/uploads.php */
 export const MAX_FILE_SIZE = 500 * 1024 * 1024
 
-/** Must match `uploads.media_retention_hours` in backend/config/uploads.php */
-export const MEDIA_RETENTION_HOURS = 24
+/** Must match `uploads.retention_hours` in backend/config/uploads.php */
+export const RETENTION_HOURS = 6
 
 export const LANGUAGES = [
   { value: 'auto', label: 'Auto-detect' },
