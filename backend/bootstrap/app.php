@@ -13,6 +13,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // On the server HTTPS ends at Caddy, which talks plain HTTP to nginx. Trusting its X-Forwarded-*
+        // headers makes generated URLs (e.g. the Google callback) https. nginx is only reachable from
+        // the host and the Docker network (docker-compose.yml), so nobody else can set these headers.
+        $middleware->trustProxies(at: '*');
+
         // Sign-in happens in the SPA; the API itself has no sign-in page to redirect to.
         $middleware->redirectGuestsTo(fn (Request $request): ?string => $request->is('api/*') ? null : config('app.frontend_url').'/login');
     })

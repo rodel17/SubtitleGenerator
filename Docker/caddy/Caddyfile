@@ -1,0 +1,14 @@
+# HTTPS reverse proxy on the server (docker-compose service "caddy", production profile only).
+# Caddy gets and renews the Let's Encrypt certificates by itself. Needs: both DNS A records
+# pointing at the server, and ports 80 + 443 open to everyone in the security group.
+# APP_DOMAIN / API_DOMAIN come from the root .env (see .env.example).
+
+# Vue app (Vite dev server; its hot-reload websocket goes through here too)
+{$APP_DOMAIN} {
+	reverse_proxy frontend:5173
+}
+
+# Laravel: API, Google sign-in callback, Horizon
+{$API_DOMAIN} {
+	reverse_proxy nginx:80
+}
