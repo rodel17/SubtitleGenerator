@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { formatBytes } from '@/lib/format'
-import { languageLabel, type SubtitleFileFormat, type UploadItem } from '@/types/upload'
+import { languageLabel, type UploadItem } from '@/types/upload'
+
+// Ready uploads are not listed: SubtitlesReadyDialog asks the user to download them
 
 const props = defineProps<{
   item: UploadItem
@@ -12,8 +13,6 @@ defineEmits<{
   cancel: [id: string]
   remove: [id: string]
   resume: [id: string]
-  edit: [id: string]
-  download: [id: string, format: SubtitleFileFormat]
 }>()
 
 const iconTone = computed(() => {
@@ -46,18 +45,6 @@ const progressLabel = computed(() => {
   if (props.item.status === 'processing') return `Finalizing · ${percent}`
   if (props.item.status === 'uploaded') return 'Waiting to transcribe…'
   return `Transcribing · ${percent}`
-})
-
-const downloads = computed(() => {
-  const formats = Object.keys(props.item.subtitles ?? {}) as SubtitleFileFormat[]
-
-  return formats.map((format) => {
-    const isLoading = props.item.downloading?.includes(format) ?? false
-    // One file: "Download" / "Downloading…"; both: keep the short format name so widths stay put
-    const label = formats.length > 1 ? format.toUpperCase() : isLoading ? 'Downloading…' : 'Download'
-
-    return { format, isLoading, label }
-  })
 })
 
 const secondaryButton =
@@ -123,27 +110,7 @@ const secondaryButton =
     <!-- Settled rows: name + status line -->
     <div v-else class="flex min-w-0 flex-[1_1_240px] flex-col gap-1">
       <span class="truncate text-sm font-semibold">{{ item.name }}</span>
-      <template v-if="item.status === 'ready'">
-        <span class="flex items-center gap-1.5 text-[13px] text-green-700">
-          <svg
-            class="size-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M20 6 9 17l-5-5" />
-          </svg>
-          Ready · {{ detailsLabel }}
-        </span>
-        <span v-if="item.downloadError" role="alert" class="text-[13px] text-red-700">
-          {{ item.downloadError }}
-        </span>
-      </template>
-      <span v-else-if="item.status === 'interrupted'" class="text-[13px] text-amber-700">{{ item.error }}</span>
+      <span v-if="item.status === 'interrupted'" class="text-[13px] text-amber-700">{{ item.error }}</span>
       <span v-else-if="item.status === 'failed'" class="text-[13px] text-red-700">{{ item.error }}</span>
       <span v-else class="text-[13px] text-slate-600">Queued · {{ detailsLabel }}</span>
     </div>
@@ -160,37 +127,6 @@ const secondaryButton =
         <path d="M18 6 6 18M6 6l12 12" />
       </svg>
     </button>
-
-    <div v-else-if="item.status === 'ready'" class="flex gap-2">
-      <button type="button" :class="secondaryButton" @click="$emit('edit', item.id)">Edit</button>
-      <button
-        v-for="download in downloads"
-        :key="download.format"
-        type="button"
-        :disabled="download.isLoading"
-        :aria-busy="download.isLoading"
-        :aria-label="downloads.length > 1 ? `Download ${download.format.toUpperCase()}` : undefined"
-        class="flex h-10 cursor-pointer items-center gap-1.5 rounded-[10px] bg-accent px-3.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-wait disabled:opacity-80"
-        @click="$emit('download', item.id, download.format)"
-      >
-        <LoadingSpinner v-if="download.isLoading" class="size-4" />
-        <svg v-else class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 4v12M6 10l6 6 6-6M4 20h16" />
-        </svg>
-        {{ download.label }}
-      </button>
-      <button
-        type="button"
-        aria-label="Delete upload"
-        title="Delete upload"
-        class="flex size-10 cursor-pointer items-center justify-center rounded-[10px] text-slate-600 hover:bg-red-50 hover:text-red-700"
-        @click="$emit('remove', item.id)"
-      >
-        <svg class="size-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" />
-        </svg>
-      </button>
-    </div>
 
     <div v-else-if="item.status === 'interrupted'" class="flex gap-2">
       <button type="button" :class="secondaryButton" @click="$emit('remove', item.id)">Remove</button>
@@ -212,7 +148,18 @@ const secondaryButton =
       Remove
     </button>
 
-    <!-- Keeps server-side rows (finalizing, transcribing) aligned with rows that have an action -->
-    <span v-else class="size-11" aria-hidden="true" />
+    <!-- Finalizing, waiting or transcribing on the server: stopping deletes it there -->
+    <button
+      v-else
+      type="button"
+      aria-label="Stop and delete"
+      title="Stop and delete"
+      class="flex size-11 cursor-pointer items-center justify-center rounded-[10px] text-slate-600 hover:bg-red-50 hover:text-red-700"
+      @click="$emit('cancel', item.id)"
+    >
+      <svg class="size-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <path d="M18 6 6 18M6 6l12 12" />
+      </svg>
+    </button>
   </li>
 </template>

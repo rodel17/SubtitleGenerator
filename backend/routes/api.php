@@ -33,8 +33,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/uploads/{upload}/completion', [UploadCompletionController::class, 'store'])
         ->can('update', 'upload')
         ->name('uploads.completion.store');
-    Route::get('/uploads/{upload}/subtitles/{format}', SubtitleDownloadController::class)
-        ->whereIn('format', ['srt', 'vtt'])
+    Route::get('/uploads/{upload}/subtitles', SubtitleDownloadController::class)
         ->can('view', 'upload')
         ->name('uploads.subtitles.show');
 });

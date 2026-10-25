@@ -49,23 +49,44 @@ it('only writes the requested format', function () {
     Storage::disk('local')->assertMissing($upload->subtitlePath('vtt'));
 });
 
-it('deletes the audio pieces but keeps the transcript', function () {
-    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+it('deletes the media, audio pieces and transcript, keeping only the subtitles', function () {
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'subtitle_format' => 'srt']);
     putTranscript($upload);
+    Storage::disk('local')->put($upload->path, 'media');
     Storage::disk('local')->put("{$upload->audioDirectory()}/0000.wav", wavBytes());
+    $mediaPath = $upload->path;
 
     GenerateSubtitles::dispatch($upload);
 
+    Storage::disk('local')->assertMissing([$mediaPath, $upload->transcriptPath()]);
     Storage::disk('local')->assertMissing($upload->audioDirectory());
-    Storage::disk('local')->assertExists($upload->transcriptPath());
+    Storage::disk('local')->assertExists($upload->subtitlePath('srt'));
+    expect($upload->fresh()->path)->toBeNull();
 });
 
-it('marks the upload failed when the transcript is missing', function () {
+it('starts the clock for deleting the subtitles if nobody downloads them', function () {
+    $this->freezeTime();
     $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+    putTranscript($upload);
+
+    GenerateSubtitles::dispatch($upload);
+
+    expect($upload->fresh()->finished_at->toDateTimeString())->toBe(now()->toDateTimeString());
+});
+
+it('marks the upload failed and deletes its files when the transcript is missing', function () {
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+    Storage::disk('local')->put($upload->path, 'media');
+    Storage::disk('local')->put("{$upload->audioDirectory()}/0000.wav", wavBytes());
+    $mediaPath = $upload->path;
 
     expect(fn () => GenerateSubtitles::dispatch($upload))->toThrow(Exception::class);
 
     $upload->refresh();
     expect($upload->status)->toBe(UploadStatus::Failed);
     expect($upload->error)->toBe('The subtitle files could not be created. Please try again.');
+    expect($upload->path)->toBeNull();
+    expect($upload->finished_at)->not->toBeNull();
+    Storage::disk('local')->assertMissing($mediaPath);
+    Storage::disk('local')->assertMissing($upload->audioDirectory());
 });

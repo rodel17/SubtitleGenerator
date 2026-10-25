@@ -2,8 +2,8 @@
 
 namespace App\Jobs;
 
-use App\Enums\UploadStatus;
 use App\Models\Upload;
+use App\Services\ChunkedUploadService;
 use App\Services\Transcription\CueBuilder;
 use App\Services\Transcription\SubtitleWriter;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -29,7 +29,7 @@ class GenerateSubtitles implements ShouldQueue
         $this->onQueue('transcription');
     }
 
-    public function handle(CueBuilder $cues, SubtitleWriter $writer): void
+    public function handle(CueBuilder $cues, SubtitleWriter $writer, ChunkedUploadService $uploads): void
     {
         $disk = Storage::disk(config('uploads.disk'));
         $this->upload->reportProgress(95);
@@ -41,10 +41,10 @@ class GenerateSubtitles implements ShouldQueue
             $disk->put($this->upload->subtitlePath($format), $writer->write($built, $format));
         }
 
-        // The transcript stays for later editing; the WAV pieces are only needed by Whisper
-        $disk->deleteDirectory($this->upload->audioDirectory());
+        // Only the subtitle files are kept, until the user downloads them
+        $uploads->deleteWorkingFiles($this->upload);
 
-        $this->upload->transitionTo(UploadStatus::Ready);
+        $this->upload->markReady();
     }
 
     public function failed(?Throwable $exception): void

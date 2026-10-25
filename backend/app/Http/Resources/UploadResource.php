@@ -33,16 +33,13 @@ class UploadResource extends JsonResource
             'status' => $this->status,
             'progress' => $this->progress(),
             'error' => $this->error,
-            'subtitles' => $this->when(
+            'download_url' => $this->when(
                 $this->status === UploadStatus::Ready,
-                fn (): array => collect($this->subtitleFormats())
-                    ->mapWithKeys(fn (string $format): array => [
-                        $format => route('uploads.subtitles.show', ['upload' => $this->id, 'format' => $format]),
-                    ])
-                    ->all(),
+                fn (): string => route('uploads.subtitles.show', $this->id),
             ),
             'created_at' => $this->created_at,
             'completed_at' => $this->completed_at,
+            'expires_at' => $this->expiresAt(),
         ];
     }
 }

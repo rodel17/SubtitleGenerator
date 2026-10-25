@@ -6,6 +6,7 @@ use App\Enums\UploadStatus;
 use App\Models\Upload;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Str;
 
 /**
  * @extends Factory<Upload>
@@ -56,20 +57,41 @@ class UploadFactory extends Factory
      */
     public function uploaded(): static
     {
-        return $this->state(fn (array $attributes): array => [
-            'status' => UploadStatus::Uploaded,
-            'path' => 'uploads/'.fake()->uuid().'.'.$attributes['extension'],
-            'completed_at' => now(),
-        ]);
+        // The media file is named after the upload, as ChunkedUploadService::assemble() names it
+        return $this->state(function (array $attributes): array {
+            $id = $attributes['id'] ?? (string) Str::uuid7();
+
+            return [
+                'id' => $id,
+                'status' => UploadStatus::Uploaded,
+                'path' => "uploads/{$id}.{$attributes['extension']}",
+                'completed_at' => now(),
+            ];
+        });
     }
 
     /**
-     * An upload that has been transcribed; its subtitle files are ready to download.
+     * An upload that has been transcribed; only its subtitle files are left, waiting to be downloaded.
      */
     public function ready(): static
     {
         return $this->uploaded()->state(fn (): array => [
             'status' => UploadStatus::Ready,
+            'path' => null,
+            'finished_at' => now(),
+        ]);
+    }
+
+    /**
+     * An upload whose processing stopped; its files are already deleted.
+     */
+    public function failed(): static
+    {
+        return $this->uploaded()->state(fn (): array => [
+            'status' => UploadStatus::Failed,
+            'error' => 'Transcription failed. Please try again.',
+            'path' => null,
+            'finished_at' => now(),
         ]);
     }
 }

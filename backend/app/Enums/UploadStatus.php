@@ -16,10 +16,10 @@ enum UploadStatus: string
     /** Extracting audio, transcribing and writing subtitle files. */
     case Transcribing = 'transcribing';
 
-    /** Subtitle files are ready to download. */
+    /** Subtitle files are waiting to be downloaded; everything else is already deleted. */
     case Ready = 'ready';
 
-    /** Processing stopped; the reason is in the upload's `error`. */
+    /** Processing stopped and its files were deleted; the reason is in the upload's `error`. */
     case Failed = 'failed';
 
     /**

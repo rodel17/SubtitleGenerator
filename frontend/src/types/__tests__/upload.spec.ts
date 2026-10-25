@@ -74,6 +74,7 @@ describe('subtitleFileName', () => {
     ['clip.final.mov', 'vtt', 'clip.final.vtt'],
     ['no-extension', 'srt', 'no-extension.srt'],
     ['.hidden', 'vtt', '.hidden.vtt'],
+    ['Team Interview.mp4', 'both', 'Team Interview.zip'],
   ] as const)('names the %s subtitles %s -> %s', (media, format, expected) => {
     expect(subtitleFileName(media, format)).toBe(expected)
   })

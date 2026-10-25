@@ -14,7 +14,8 @@ use Illuminate\Http\Response;
 class UploadController extends Controller
 {
     /**
-     * List the signed-in user's most recent uploads.
+     * List the signed-in user's uploads. Delivered ones are deleted, so these are
+     * the ones still uploading, processing, waiting to be downloaded, or failed.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
@@ -40,7 +41,8 @@ class UploadController extends Controller
     }
 
     /**
-     * Cancel or delete an upload, along with its files.
+     * Cancel or delete an upload, along with its files. The client also calls
+     * this once it has downloaded the subtitles.
      */
     public function destroy(Upload $upload, ChunkedUploadService $uploads): Response
     {

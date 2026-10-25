@@ -55,6 +55,33 @@ function transcriptOf(Upload $upload): array
     return json_decode(Storage::disk('local')->get($upload->transcriptPath()), true);
 }
 
+it('stops sending pieces to Whisper once the user has stopped (deleted) the upload', function () {
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+    putAudioPiece($upload, 0, 1.0);
+    putAudioPiece($upload, 1, 1.0);
+    putAudioPiece($upload, 2, 1.0);
+    $transcriber = new class($upload) implements Transcriber
+    {
+        public int $calls = 0;
+
+        public function __construct(private Upload $upload) {}
+
+        public function transcribe(string $audioPath, ?string $language): array
+        {
+            $this->calls++;
+            $this->upload->delete(); // the user presses Stop while the first piece is transcribed
+
+            return ['language' => 'en', 'segments' => [['start' => 0.0, 'end' => 1.0, 'text' => 'Hi.']]];
+        }
+    };
+    app()->instance(Transcriber::class, $transcriber);
+
+    TranscribeAudio::dispatch($upload);
+
+    expect($transcriber->calls)->toBe(1);
+    Storage::disk('local')->assertMissing($upload->transcriptPath());
+});
+
 it('joins the pieces into one transcript, shifting each piece by the length of those before it', function () {
     $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'language' => 'en']);
     putAudioPiece($upload, 0, 2.0);

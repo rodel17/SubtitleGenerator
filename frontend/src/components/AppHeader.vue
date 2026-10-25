@@ -41,24 +41,9 @@ async function signOut() {
         <span class="text-base font-semibold tracking-tight">Subtitle Generator</span>
       </RouterLink>
 
+      <!-- One page only: files aren't kept, so there is no "My files" -->
       <div v-if="auth.user" class="flex flex-wrap items-center gap-4">
-        <nav class="flex items-center gap-1 text-sm font-medium">
-          <RouterLink
-            to="/"
-            class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-            exact-active-class="bg-slate-100 text-slate-900!"
-          >
-            Upload
-          </RouterLink>
-          <a href="#" class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900">
-            My files
-          </a>
-          <a href="#" class="rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900">
-            Settings
-          </a>
-        </nav>
-
-        <div class="flex items-center gap-3 border-l border-slate-200 pl-4">
+        <div class="flex items-center gap-3">
           <img
             v-if="auth.user.avatar"
             :src="auth.user.avatar"

@@ -70,6 +70,7 @@ describe('show', function () {
             ->assertExactJsonStructure(['data' => [
                 'id', 'name', 'extension', 'mime_type', 'last_modified', 'size', 'chunk_size', 'total_chunks',
                 'language', 'subtitle_format', 'status', 'progress', 'error', 'created_at', 'completed_at',
+                'expires_at',
             ]])
             ->assertJsonPath('data.name', 'Interview.mp4')
             ->assertJsonPath('data.size', 45)
@@ -101,6 +102,7 @@ describe('show', function () {
     ]);
 
     it('explains why processing failed', function () {
+        Storage::fake('local');
         $upload = Upload::factory()->for($this->user)->uploaded()->create();
         $upload->markFailed('No speech was detected in this file.');
 
@@ -109,19 +111,32 @@ describe('show', function () {
             ->assertJsonPath('data.error', 'No speech was detected in this file.');
     });
 
-    it('links each generated subtitle file once ready', function () {
+    it('links the subtitle download once ready', function () {
         $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'both']);
 
-        $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.subtitles', [
-            'srt' => url("/api/uploads/{$upload->id}/subtitles/srt"),
-            'vtt' => url("/api/uploads/{$upload->id}/subtitles/vtt"),
-        ]);
+        $this->getJson("/api/uploads/{$upload->id}")
+            ->assertJsonPath('data.download_url', url("/api/uploads/{$upload->id}/subtitles"));
     });
 
-    it('has no subtitle links before the upload is ready', function () {
+    it('has no download link before the upload is ready', function () {
         $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => UploadStatus::Transcribing]);
 
-        $this->getJson("/api/uploads/{$upload->id}")->assertJsonMissingPath('data.subtitles');
+        $this->getJson("/api/uploads/{$upload->id}")->assertJsonMissingPath('data.download_url');
+    });
+
+    it('says when a finished upload will be deleted if nobody downloads it', function () {
+        $this->freezeSecond();
+        config(['uploads.retention_hours' => 6]);
+        $upload = Upload::factory()->for($this->user)->ready()->create(['finished_at' => now()]);
+
+        $this->getJson("/api/uploads/{$upload->id}")
+            ->assertJsonPath('data.expires_at', now()->addHours(6)->toJSON());
+    });
+
+    it('has no deletion time while the upload is still being processed', function () {
+        $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => UploadStatus::Transcribing]);
+
+        $this->getJson("/api/uploads/{$upload->id}")->assertJsonPath('data.expires_at', null);
     });
 
     it('does not expose the storage path', function () {
@@ -386,14 +401,27 @@ describe('destroy', function () {
         Storage::disk('local')->assertMissing($upload->path);
     });
 
-    it('deletes the transcript, subtitles and leftover audio of a transcribed upload', function () {
+    it('deletes the subtitles once they have been downloaded', function () {
         Storage::fake('local');
         $upload = Upload::factory()->for($this->user)->ready()->create(['subtitle_format' => 'both']);
+        $files = [$upload->subtitlePath('srt'), $upload->subtitlePath('vtt')];
+        foreach ($files as $file) {
+            Storage::disk('local')->put($file, 'x');
+        }
+
+        $this->deleteJson("/api/uploads/{$upload->id}")->assertNoContent();
+
+        $this->assertModelMissing($upload);
+        Storage::disk('local')->assertMissing($files);
+    });
+
+    it('deletes every file of an upload that is still being transcribed', function () {
+        Storage::fake('local');
+        $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => UploadStatus::Transcribing]);
         $files = [
             $upload->path,
             $upload->transcriptPath(),
             $upload->subtitlePath('srt'),
-            $upload->subtitlePath('vtt'),
             "{$upload->audioDirectory()}/0000.wav",
         ];
         foreach ($files as $file) {

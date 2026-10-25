@@ -42,6 +42,7 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     status: 'ready',
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
+    expires_at: null,
     ...overrides,
   }
 }
@@ -78,7 +79,7 @@ afterEach(() => {
 })
 
 describe('fetchRecent', () => {
-  it('shows ready uploads from the server with their download links', async () => {
+  it('shows ready uploads from the server with their download link and deletion time', async () => {
     get.mockResolvedValue({
       data: {
         data: [
@@ -86,7 +87,8 @@ describe('fetchRecent', () => {
             language: 'ja',
             subtitle_format: 'vtt',
             last_modified: 123,
-            subtitles: { vtt: 'http://api.test/subtitles/vtt' },
+            download_url: 'http://api.test/uploads/server-1/subtitles',
+            expires_at: '2026-10-20T18:01:00.000000Z',
           }),
         ],
       },
@@ -109,7 +111,8 @@ describe('fetchRecent', () => {
         error: undefined,
         language: 'ja',
         format: 'vtt',
-        subtitles: { vtt: 'http://api.test/subtitles/vtt' },
+        downloadUrl: 'http://api.test/uploads/server-1/subtitles',
+        expiresAt: '2026-10-20T18:01:00.000000Z',
       },
     ])
   })
@@ -528,7 +531,13 @@ describe('following server processing', () => {
     get
       .mockResolvedValueOnce({ data: { data: resource({ status: 'transcribing', progress: 40 }) } })
       .mockResolvedValueOnce({
-        data: { data: resource({ status: 'ready', subtitles: { srt: 'http://api.test/subtitles/srt' } }) },
+        data: {
+          data: resource({
+            status: 'ready',
+            download_url: 'http://api.test/uploads/server-1/subtitles',
+            expires_at: '2026-10-20T18:01:00.000000Z',
+          }),
+        },
       })
     await uploadAccepted(store, { status: 'assembling', progress: 0 })
     expect(store.items[0]).toMatchObject({ status: 'processing', progress: 0 })
@@ -541,7 +550,8 @@ describe('following server processing', () => {
     expect(store.items[0]).toMatchObject({
       status: 'ready',
       progress: undefined,
-      subtitles: { srt: 'http://api.test/subtitles/srt' },
+      downloadUrl: 'http://api.test/uploads/server-1/subtitles',
+      expiresAt: '2026-10-20T18:01:00.000000Z',
     })
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
@@ -750,92 +760,164 @@ describe('resume', () => {
 })
 
 describe('download', () => {
-  const srtUrl = 'http://api.test/uploads/server-1/subtitles/srt'
+  const downloadUrl = 'http://api.test/uploads/server-1/subtitles'
 
-  async function readyStore() {
+  async function readyStore(overrides: Partial<UploadResource> = {}) {
     get.mockResolvedValueOnce({
-      data: { data: [resource({ name: 'Team Interview.mp4', subtitle_format: 'both', subtitles: { srt: srtUrl, vtt: 'http://api.test/v' } })] },
+      data: { data: [resource({ name: 'Team Interview.mp4', subtitle_format: 'srt', download_url: downloadUrl, ...overrides })] },
     })
     const store = useUploadsStore()
     await store.fetchRecent()
     return store
   }
 
-  it('fetches the file and saves it under the media name with the format extension', async () => {
+  it('fetches the subtitles and saves them under the media name', async () => {
     const store = await readyStore()
     const blob = new Blob(['1\n00:00:00,000 --> 00:00:01,000\nHi\n'])
     get.mockResolvedValueOnce({ data: blob })
 
-    await store.download('server-1', 'srt')
+    await store.download('server-1')
 
-    expect(get).toHaveBeenLastCalledWith(srtUrl, { responseType: 'blob' })
+    expect(get).toHaveBeenLastCalledWith(downloadUrl, { responseType: 'blob' })
     expect(save).toHaveBeenCalledWith(blob, 'Team Interview.srt')
   })
 
-  it('marks the format as downloading until the file arrives', async () => {
+  it('saves both formats as one zip', async () => {
+    const store = await readyStore({ subtitle_format: 'both' })
+    get.mockResolvedValueOnce({ data: new Blob(['zip']) })
+
+    await store.download('server-1')
+
+    expect(save).toHaveBeenCalledWith(expect.any(Blob), 'Team Interview.zip')
+  })
+
+  it('deletes the upload from the server once the file is saved, and drops the row', async () => {
+    const store = await readyStore()
+    get.mockResolvedValueOnce({ data: new Blob(['x']) })
+
+    await store.download('server-1')
+
+    expect(destroy).toHaveBeenCalledWith('/uploads/server-1')
+    expect(store.items).toEqual([])
+  })
+
+  it('drops the row even when the delete fails: the user has the file and the server cleans up later', async () => {
+    const store = await readyStore()
+    get.mockResolvedValueOnce({ data: new Blob(['x']) })
+    destroy.mockRejectedValue(networkError())
+
+    await store.download('server-1')
+
+    expect(save).toHaveBeenCalled()
+    expect(store.items).toEqual([])
+  })
+
+  it('marks the upload as downloading until the file arrives', async () => {
     const store = await readyStore()
     const response = deferred<{ data: Blob }>()
     get.mockReturnValueOnce(response.promise)
 
-    const downloading = store.download('server-1', 'srt')
-    expect(store.items[0]!.downloading).toEqual(['srt'])
+    const downloading = store.download('server-1')
+    expect(store.items[0]!.downloading).toBe(true)
     response.resolve({ data: new Blob(['x']) })
     await downloading
 
-    expect(store.items[0]!.downloading).toEqual([])
+    expect(store.items).toEqual([])
   })
 
-  it('ignores a second click on a format that is still downloading', async () => {
+  it('ignores a second click while the file is still downloading', async () => {
     const store = await readyStore()
     get.mockReturnValueOnce(new Promise(() => {}))
 
-    void store.download('server-1', 'srt')
-    await store.download('server-1', 'srt')
+    void store.download('server-1')
+    await store.download('server-1')
 
     expect(get).toHaveBeenCalledTimes(2) // the list, then one file request
   })
 
-  it('can download both formats at the same time', async () => {
+  it('keeps everything and shows an error when the file cannot be fetched, so it can be retried', async () => {
     const store = await readyStore()
-    get.mockReturnValue(new Promise(() => {}))
+    get.mockRejectedValueOnce(networkError())
 
-    void store.download('server-1', 'srt')
-    void store.download('server-1', 'vtt')
-
-    expect(store.items[0]!.downloading).toEqual(['srt', 'vtt'])
-  })
-
-  it('shows an error and saves nothing when the file cannot be fetched', async () => {
-    const store = await readyStore()
-    get.mockRejectedValueOnce(httpError(404))
-
-    await store.download('server-1', 'srt')
+    await store.download('server-1')
 
     expect(store.items[0]).toMatchObject({
       status: 'ready',
-      downloading: [],
-      downloadError: 'The SRT file could not be downloaded. Please try again.',
+      downloading: false,
+      downloadError: 'The subtitles could not be downloaded. Please try again.',
     })
     expect(save).not.toHaveBeenCalled()
+    expect(destroy).not.toHaveBeenCalled()
   })
 
-  it('clears the previous error when a download succeeds', async () => {
+  it('says when the subtitles are gone from the server', async () => {
     const store = await readyStore()
-    get.mockRejectedValueOnce(networkError()).mockResolvedValueOnce({ data: new Blob(['x']) })
-    await store.download('server-1', 'srt')
+    get.mockRejectedValueOnce(httpError(404))
 
-    await store.download('server-1', 'srt')
+    await store.download('server-1')
+
+    expect(store.items[0]!.downloadError).toBe('These subtitles are no longer available.')
+  })
+
+  it('clears the previous error when a download is retried', async () => {
+    const store = await readyStore()
+    const retry = deferred<{ data: Blob }>()
+    get.mockRejectedValueOnce(networkError()).mockReturnValueOnce(retry.promise)
+    await store.download('server-1')
+
+    void store.download('server-1')
 
     expect(store.items[0]!.downloadError).toBeUndefined()
   })
 
-  it('does nothing for a format that was not generated', async () => {
-    get.mockResolvedValueOnce({ data: { data: [resource({ subtitles: { srt: srtUrl } })] } })
+  it('does nothing for an upload that is not ready', async () => {
+    get.mockResolvedValueOnce({ data: { data: [resource({ status: 'transcribing' })] } })
     const store = useUploadsStore()
     await store.fetchRecent()
 
-    await store.download('server-1', 'vtt')
+    await store.download('server-1')
 
     expect(get).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('nextReady', () => {
+  it('is the upload that finished first, so it is offered before it expires', async () => {
+    vi.useFakeTimers()
+    get.mockResolvedValue({
+      data: {
+        data: [
+          resource({ id: 'newest', status: 'ready', expires_at: '2026-10-20T18:30:00.000000Z' }),
+          resource({ id: 'busy', status: 'transcribing' }),
+          resource({ id: 'oldest', status: 'ready', expires_at: '2026-10-20T18:10:00.000000Z' }),
+        ],
+      },
+    })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    expect(store.nextReady?.id).toBe('oldest')
+
+    await store.remove('oldest')
+    expect(store.nextReady?.id).toBe('newest')
+  })
+
+  it('keeps list order for uploads that finished at the same time', async () => {
+    const expires_at = '2026-10-20T18:10:00.000000Z'
+    get.mockResolvedValue({
+      data: { data: [resource({ id: 'first', status: 'ready', expires_at }), resource({ id: 'second', status: 'ready', expires_at })] },
+    })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    expect(store.nextReady?.id).toBe('first')
+  })
+
+  it('is undefined while nothing is ready', async () => {
+    get.mockResolvedValue({ data: { data: [resource({ status: 'failed' })] } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    expect(store.nextReady).toBeUndefined()
   })
 })
