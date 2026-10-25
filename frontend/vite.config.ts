@@ -22,11 +22,12 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',   // listen on all interfaces, not just localhost
     port: 5173,
+    // Besides localhost/IPs, answer the server's public host name (set by docker-compose.yml from the root .env)
+    allowedHosts: process.env.APP_DOMAIN ? [process.env.APP_DOMAIN] : [],
     watch: {
       usePolling: true // needed because Docker volume mounts don't always trigger native file-change events
     },
-    hmr: {
-      host: 'localhost' // so the browser's websocket connects back correctly
-    }
+    // No hmr.host: the browser opens the hot-reload websocket to the address it loaded the page from
+    // (ws://localhost:5173 locally, wss://<APP_DOMAIN> through Caddy on the server)
   }
 })

@@ -243,14 +243,12 @@ return [
     ],
 
     'environments' => [
+        // The server is small (2 vCPU, 8 GB) and Whisper needs most of it, so keep the same worker counts as local
         'production' => [
             'supervisor-1' => [
-                'maxProcesses' => 10,
+                'maxProcesses' => 3,
                 'balanceMaxShift' => 1,
                 'balanceCooldown' => 3,
-            ],
-            'supervisor-uploads' => [
-                'maxProcesses' => 4,
             ],
         ],
 

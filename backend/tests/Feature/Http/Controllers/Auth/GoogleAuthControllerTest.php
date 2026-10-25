@@ -42,6 +42,15 @@ describe('redirect', function () {
         $this->get('/auth/google/redirect')->assertRedirect('https://socialite.fake/google/authorize');
     });
 
+    it('gives Google an https callback when HTTPS ends at the proxy in front of the app', function () {
+        $location = $this->withHeaders(['X-Forwarded-Proto' => 'https'])
+            ->get('http://api.subgen.test/auth/google/redirect')
+            ->headers->get('Location');
+
+        parse_str(parse_url($location, PHP_URL_QUERY), $query);
+        expect($query['redirect_uri'])->toBe('https://api.subgen.test/auth/google/callback');
+    });
+
     it('returns to the sign-in page with a message when Google is not configured', function () {
         config(['services.google.client_id' => null]);
 
