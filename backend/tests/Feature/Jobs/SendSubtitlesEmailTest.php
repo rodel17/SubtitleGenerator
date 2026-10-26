@@ -105,6 +105,17 @@ it('attaches only the requested format', function () {
     $mail->assertHasAttachedData("WEBVTT\n", 'Team Interview.vtt', ['mime' => 'text/vtt']);
 });
 
+it('comes from SubGen, with the SubGen header and footer and no Laravel branding', function () {
+    config(['app.name' => 'Laravel', 'mail.from.name' => 'Laravel', 'app.frontend_url' => 'https://app.subgen.test']);
+    $mail = new SubtitlesReady(emailingUpload());
+
+    $mail->assertFrom(config('mail.from.address'), 'SubGen');
+    $mail->assertSeeInOrderInHtml(['https://app.subgen.test', 'CC', 'SubGen', 'Team Interview.mp4', '© '.date('Y').' SubGen.']);
+    $mail->assertDontSeeInHtml('Laravel');
+    $mail->assertSeeInText('SubGen');
+    $mail->assertDontSeeInText('Laravel');
+});
+
 it('tells the user the subtitles are attached and deleted from the servers', function () {
     $mail = new SubtitlesReady(emailingUpload());
 

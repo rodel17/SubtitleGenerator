@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use App\Models\Upload;
 use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -23,7 +24,11 @@ class SubtitlesReady extends Mailable
 
     public function envelope(): Envelope
     {
-        return new Envelope(subject: "Your subtitles for {$this->upload->original_name}");
+        return new Envelope(
+            // The brand, whatever APP_NAME / MAIL_FROM_NAME say
+            from: new Address(config('mail.from.address'), 'SubGen'),
+            subject: "Your subtitles for {$this->upload->original_name}",
+        );
     }
 
     public function content(): Content
