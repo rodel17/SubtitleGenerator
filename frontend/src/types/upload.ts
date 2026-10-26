@@ -10,6 +10,8 @@ export type UploadStatus =
   /** File is complete and waiting for a transcription worker */
   | 'uploaded'
   | 'transcribing'
+  /** Translating the transcript into the chosen language */
+  | 'translating'
   | 'ready'
   | 'failed'
 
@@ -20,6 +22,7 @@ export const SERVER_PROCESSING_STATUSES: readonly UploadStatus[] = [
   'processing',
   'uploaded',
   'transcribing',
+  'translating',
 ]
 
 export interface UploadItem {
@@ -36,6 +39,8 @@ export interface UploadItem {
   /** 0–100 while uploading, processing or transcribing */
   progress?: number
   language?: string
+  /** Language the subtitles are translated into; unset keeps the spoken language */
+  translateTo?: string
   format?: SubtitleFormat
   error?: string
   /** Where to download the subtitles, once ready */
@@ -71,11 +76,13 @@ export function isEmailing(item: UploadItem): boolean {
 
 /**
  * "Team Interview.mp4" + "srt" -> "Team Interview.srt", as the API names the file.
- * Both formats come as one zip: "Team Interview.zip".
+ * Both formats come as one zip: "Team Interview.zip". Translated subtitles carry
+ * the language: "Team Interview.fil.srt".
  */
-export function subtitleFileName(mediaName: string, format: SubtitleFormat): string {
+export function subtitleFileName(mediaName: string, format: SubtitleFormat, translateTo?: string): string {
   const dot = mediaName.lastIndexOf('.')
-  return `${dot > 0 ? mediaName.slice(0, dot) : mediaName}.${format === 'both' ? 'zip' : format}`
+  const base = dot > 0 ? mediaName.slice(0, dot) : mediaName
+  return `${base}${translateTo ? `.${translateTo}` : ''}.${format === 'both' ? 'zip' : format}`
 }
 
 /** Status of an upload as the Laravel API reports it */
@@ -84,6 +91,7 @@ export type ServerUploadStatus =
   | 'assembling'
   | 'uploaded'
   | 'transcribing'
+  | 'translating'
   | 'ready'
   | 'failed'
 
@@ -98,10 +106,13 @@ export interface UploadResource {
   chunk_size: number
   total_chunks: number
   language: string | null
+  translate_to: string | null
+  /** "local" (translated on our server) when translating, otherwise null */
+  translation_engine: string | null
   subtitle_format: SubtitleFormat
   email_when_ready: boolean
   status: ServerUploadStatus
-  /** 0–100 while the server is assembling or transcribing, otherwise null */
+  /** 0–100 while the server is assembling, transcribing or translating, otherwise null */
   progress: number | null
   error: string | null
   email_status: EmailStatus | null
@@ -149,4 +160,17 @@ export function mediaKindOf(name: string): MediaKind {
 
 export function languageLabel(value: string | undefined): string | undefined {
   return LANGUAGES.find((lang) => lang.value === value)?.label ?? value
+}
+
+/** Must match `translation.targets` in backend/config/translation.php */
+export const TRANSLATION_TARGETS = [
+  { value: 'fil', label: 'Filipino' },
+  { value: 'en', label: 'English' },
+  { value: 'ja', label: 'Japanese' },
+  { value: 'zh', label: 'Chinese (Simplified)' },
+  { value: 'ko', label: 'Korean' },
+] as const
+
+export function translationLabel(value: string | undefined): string | undefined {
+  return TRANSLATION_TARGETS.find((target) => target.value === value)?.label ?? value
 }

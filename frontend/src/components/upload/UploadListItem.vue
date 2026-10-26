@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { formatBytes } from '@/lib/format'
-import { isEmailing, languageLabel, type UploadItem } from '@/types/upload'
+import { isEmailing, languageLabel, translationLabel, type UploadItem } from '@/types/upload'
 
 // Ready uploads are only listed while being emailed; otherwise SubtitlesReadyDialog asks for them
 
@@ -24,7 +24,9 @@ const iconTone = computed(() => {
 
 const detailsLabel = computed(() =>
   [
-    languageLabel(props.item.language),
+    props.item.translateTo
+      ? `${languageLabel(props.item.language)} → ${translationLabel(props.item.translateTo)}`
+      : languageLabel(props.item.language),
     props.item.format?.toUpperCase(),
     formatBytes(props.item.size),
   ]
@@ -35,7 +37,9 @@ const detailsLabel = computed(() =>
 const emailing = computed(() => isEmailing(props.item))
 
 const isInProgress = computed(
-  () => ['uploading', 'processing', 'uploaded', 'transcribing'].includes(props.item.status) || emailing.value,
+  () =>
+    ['uploading', 'processing', 'uploaded', 'transcribing', 'translating'].includes(props.item.status) ||
+    emailing.value,
 )
 
 /** Waiting in the transcription queue, or for the email to go out, has no measurable progress */
@@ -47,6 +51,7 @@ const progressLabel = computed(() => {
   if (props.item.status === 'uploading') return `Uploading · ${percent}`
   if (props.item.status === 'processing') return `Finalizing · ${percent}`
   if (props.item.status === 'uploaded') return 'Waiting to transcribe…'
+  if (props.item.status === 'translating') return `Translating · ${percent}`
   return `Transcribing · ${percent}`
 })
 

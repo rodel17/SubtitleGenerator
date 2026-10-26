@@ -28,6 +28,7 @@ const STATUS_FROM_SERVER: Record<ServerUploadStatus, UploadStatus> = {
   assembling: 'processing',
   uploaded: 'uploaded',
   transcribing: 'transcribing',
+  translating: 'translating',
   ready: 'ready',
   failed: 'failed',
 }
@@ -50,6 +51,7 @@ function fromResource(resource: UploadResource): UploadItem {
     progress: resource.progress ?? undefined,
     error: errorFor(resource),
     language: resource.language ?? undefined,
+    translateTo: resource.translate_to ?? undefined,
     format: resource.subtitle_format,
     downloadUrl: resource.download_url,
     expiresAt: resource.expires_at ?? undefined,
@@ -126,7 +128,13 @@ export const useUploadsStore = defineStore('uploads', () => {
     }
   }
 
-  function enqueue(files: File[], language: string, format: SubtitleFormat, emailWhenReady = false) {
+  function enqueue(
+    files: File[],
+    language: string,
+    format: SubtitleFormat,
+    emailWhenReady = false,
+    translateTo?: string,
+  ) {
     const queued = files.map((file) => {
       const id = localId()
       pendingFiles.set(id, file)
@@ -141,6 +149,7 @@ export const useUploadsStore = defineStore('uploads', () => {
         language,
         format,
         emailWhenReady,
+        translateTo,
       }
     })
 
@@ -235,6 +244,7 @@ export const useUploadsStore = defineStore('uploads', () => {
             language: item.language ?? 'auto',
             format: item.format ?? 'srt',
             emailWhenReady: item.emailWhenReady ?? false,
+            translateTo: item.translateTo,
             onStarted: (resource) => (item.serverId = resource.id),
           })
       applyResource(item, accepted)
@@ -310,7 +320,7 @@ export const useUploadsStore = defineStore('uploads', () => {
 
     try {
       const { data } = await api.get<Blob>(item.downloadUrl, { responseType: 'blob' })
-      saveBlob(data, subtitleFileName(item.name, item.format ?? 'srt'))
+      saveBlob(data, subtitleFileName(item.name, item.format ?? 'srt', item.translateTo))
     } catch (error) {
       item.downloading = false
       // The error body is a Blob here, so there is no server message to show

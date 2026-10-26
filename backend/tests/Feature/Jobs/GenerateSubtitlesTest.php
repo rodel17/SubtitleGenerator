@@ -77,6 +77,35 @@ it('starts the clock for deleting the subtitles if nobody downloads them', funct
     expect($upload->fresh()->finished_at->toDateTimeString())->toBe(now()->toDateTimeString());
 });
 
+it('writes the translation instead of the spoken language when there is one, and deletes it afterwards', function () {
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Translating, 'subtitle_format' => 'srt', 'translate_to' => 'fil']);
+    putTranscript($upload);
+    Storage::disk('local')->put($upload->translationPath(), json_encode([
+        'language' => 'fil',
+        'segments' => [['start' => 1.5, 'end' => 3.25, 'text' => 'Kumusta.', 'words' => [['start' => 1.5, 'end' => 3.25, 'word' => 'Kumusta.']]]],
+    ]));
+
+    GenerateSubtitles::dispatch($upload);
+
+    expect(Storage::disk('local')->get($upload->subtitlePath('srt')))->toBe("1\n00:00:01,500 --> 00:00:03,250\nKumusta.\n");
+    Storage::disk('local')->assertMissing([$upload->translationPath(), $upload->transcriptPath()]);
+});
+
+it('joins Japanese without spaces', function () {
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'subtitle_format' => 'srt']);
+    Storage::disk('local')->put($upload->transcriptPath(), json_encode([
+        'language' => 'ja',
+        'segments' => [['start' => 0.0, 'end' => 1.0, 'text' => 'こんにちは世界', 'words' => [
+            ['start' => 0.0, 'end' => 0.5, 'word' => 'こんにちは'],
+            ['start' => 0.5, 'end' => 1.0, 'word' => '世界'],
+        ]]],
+    ]));
+
+    GenerateSubtitles::dispatch($upload);
+
+    expect(Storage::disk('local')->get($upload->subtitlePath('srt')))->toContain("\nこんにちは世界\n");
+});
+
 it('emails the subtitles straight away when that was chosen before uploading', function () {
     Queue::fake([SendSubtitlesEmail::class]);
     $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'email_when_ready' => true]);

@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 /**
- * Second step of transcription (10–95% of its progress): send each audio piece
+ * Second step of transcription (10–95% of its progress, 10–75% when translating): send each audio piece
  * to Whisper and save the combined transcript as JSON.
  */
 class TranscribeAudio implements ShouldQueue
@@ -45,6 +45,8 @@ class TranscribeAudio implements ShouldQueue
         $language = $this->upload->language;
         $segments = [];
         $offset = 0.0;
+        // Translating takes 75–95% of the progress when there is something to translate
+        $progressEnd = $this->upload->translate_to !== null ? 75 : 95;
 
         foreach ($pieces as $number => $piece) {
             // Stopped by the user: the upload and its files are gone, so don't keep Whisper busy
@@ -77,7 +79,7 @@ class TranscribeAudio implements ShouldQueue
             }
 
             $offset += $audio->wavDuration($disk->path($piece));
-            $this->upload->reportProgress(10 + (int) floor(($number + 1) / count($pieces) * 85));
+            $this->upload->reportProgress(10 + (int) floor(($number + 1) / count($pieces) * ($progressEnd - 10)));
         }
 
         if ($segments === []) {

@@ -33,6 +33,7 @@ services:
       - postgres
       - redis
       - whisper
+      - translator
 
   # Laravel scheduler (routes/console.php): horizon:snapshot for dashboard metrics, model:prune
   scheduler:
@@ -139,6 +140,20 @@ services:
     networks:
       - app-network
 
+  # Local translation (Docker/translator/server.py): NLLB-200 distilled 600M, int8, on CTranslate2.
+  # Called by the TranslateTranscript job at http://translator:8000. First start downloads the
+  # model (~630 MB) into the translator_models volume. The model is CC-BY-NC 4.0: non-commercial use only.
+  translator:
+    build:
+      context: .
+      dockerfile: Docker/translator/Dockerfile
+    container_name: laravel_translator
+    restart: unless-stopped
+    volumes:
+      - translator_models:/models
+    networks:
+      - app-network
+
   # Redis: queues (via Horizon) and cache
   redis:
     image: redis:7-alpine
@@ -160,5 +175,6 @@ volumes:
   postgres_data:
   redis_data:
   whisper_models:
+  translator_models:
   caddy_data:
   caddy_config:

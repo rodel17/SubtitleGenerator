@@ -46,11 +46,12 @@ class AssembleUpload implements ShouldBeUnique, ShouldQueue
     {
         $uploads->assemble($this->upload, fn (int $percent) => $this->upload->reportProgress($percent));
 
-        Bus::chain([
+        Bus::chain(array_values(array_filter([
             new ExtractAudio($this->upload),
             new TranscribeAudio($this->upload),
+            $this->upload->translate_to !== null ? new TranslateTranscript($this->upload) : null,
             new GenerateSubtitles($this->upload),
-        ])->dispatch();
+        ])))->dispatch();
     }
 
     public function failed(?Throwable $exception): void

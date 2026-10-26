@@ -321,11 +321,28 @@ test.describe('uploading', () => {
         language: 'ja',
         subtitle_format: 'vtt',
         email_when_ready: false,
+        translate_to: null,
       },
     ])
     expect(api.chunkIndexes.toSorted()).toEqual([0, 1])
     expect(api.completions).toEqual(['upload-1'])
     await expect(page.getByText('Selected')).toHaveCount(0)
+  })
+
+  test('translates the subtitles into the chosen language', async ({ page }) => {
+    await page.goto('/')
+    await chooseWav(page, 'interview.wav')
+    await page.getByLabel('Translate to').selectOption('fil')
+    await expect(page.getByText('Translated on our own server; the text never leaves it.')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+
+    await expect(uploadsList(page).getByText('Translating · 85%')).toBeVisible({ timeout: 10_000 })
+    await expect(readyDialog(page)).toContainText('Auto-detect → Filipino', { timeout: 10_000 })
+    const download = page.waitForEvent('download')
+    await readyDialog(page).getByRole('button', { name: 'Download Filipino SRT' }).click()
+    expect((await download).suggestedFilename()).toBe('interview.fil.srt')
+    expect(api.startRequests[0]).toMatchObject({ translate_to: 'fil' })
   })
 
   test('emails the subtitles without asking when that was chosen before uploading', async ({ page }) => {

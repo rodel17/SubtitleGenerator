@@ -18,6 +18,7 @@ import {
   MAX_FILE_SIZE,
   RETENTION_HOURS,
   SERVER_PROCESSING_STATUSES,
+  TRANSLATION_TARGETS,
   type SubtitleFormat,
   type UploadItem,
 } from '@/types/upload'
@@ -35,6 +36,8 @@ const language = ref<string>(LANGUAGES[0].value)
 const format = ref<SubtitleFormat>('srt')
 /** Email the subtitles as soon as they're ready, so the page can be closed */
 const emailWhenReady = ref(false)
+/** Language to translate the subtitles into; '' keeps the spoken language */
+const translateTo = ref('')
 
 function addFiles(files: File[]) {
   for (const file of files) {
@@ -67,6 +70,7 @@ function generate() {
     language.value,
     format.value,
     emailWhenReady.value,
+    translateTo.value || undefined,
   )
   selectedFiles.value = []
 }
@@ -241,6 +245,25 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
               {{ lang.label }}
             </option>
           </select>
+        </div>
+
+        <div class="flex flex-col gap-2">
+          <label for="translate-to" class="text-[13px] font-semibold text-slate-700">
+            Translate to
+          </label>
+          <select
+            id="translate-to"
+            v-model="translateTo"
+            class="h-11 rounded-[10px] border border-slate-300 bg-white px-3 text-sm focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none"
+          >
+            <option value="">Don't translate</option>
+            <option v-for="target in TRANSLATION_TARGETS" :key="target.value" :value="target.value">
+              {{ target.label }}
+            </option>
+          </select>
+          <p v-if="translateTo" class="text-xs text-slate-600" data-test="translation-note">
+            Translated on our own server; the text never leaves it.
+          </p>
         </div>
 
         <FormatToggle v-model="format" />

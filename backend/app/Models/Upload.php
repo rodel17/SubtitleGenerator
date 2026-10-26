@@ -35,6 +35,8 @@ class Upload extends Model
         'chunk_size',
         'total_chunks',
         'language',
+        'translate_to',
+        'translation_engine',
         'subtitle_format',
         'email_when_ready',
         'status',
@@ -185,17 +187,28 @@ class Upload extends Model
         return "transcripts/{$this->id}.json";
     }
 
+    /**
+     * The translated transcript (TranslateTranscript); only exists when translating.
+     */
+    public function translationPath(): string
+    {
+        return "translations/{$this->id}.json";
+    }
+
     public function subtitlePath(string $format): string
     {
         return "subtitles/{$this->id}.{$format}";
     }
 
     /**
-     * "Team Interview.mp4" -> "Team Interview.srt": what the user gets, by download or email.
+     * "Team Interview.mp4" -> "Team Interview.srt", or "Team Interview.fil.srt" when
+     * translated into Filipino: what the user gets, by download or email.
      */
     public function subtitleFileName(string $format): string
     {
-        return pathinfo($this->original_name, PATHINFO_FILENAME).".{$format}";
+        $language = $this->translate_to !== null ? ".{$this->translate_to}" : '';
+
+        return pathinfo($this->original_name, PATHINFO_FILENAME)."{$language}.{$format}";
     }
 
     private function progressCacheKey(): string

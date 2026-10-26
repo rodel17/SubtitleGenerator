@@ -10,9 +10,11 @@ export interface FakeUpload {
   chunk_size: number
   total_chunks: number
   language: string | null
+  translate_to: string | null
+  translation_engine: string | null
   subtitle_format: 'srt' | 'vtt' | 'both'
   email_when_ready: boolean
-  status: 'uploading' | 'assembling' | 'uploaded' | 'transcribing' | 'ready' | 'failed'
+  status: 'uploading' | 'assembling' | 'uploaded' | 'transcribing' | 'translating' | 'ready' | 'failed'
   progress: number | null
   error: string | null
   email_status: 'sending' | 'failed' | null
@@ -36,6 +38,8 @@ export function fakeUpload(overrides: Partial<FakeUpload> = {}): FakeUpload {
     chunk_size: 5 * 1024 * 1024,
     total_chunks: 1,
     language: 'en',
+    translate_to: null,
+    translation_engine: null,
     subtitle_format: 'srt',
     email_when_ready: false,
     status: 'ready',
@@ -110,6 +114,7 @@ export class FakeApi {
         language: string
         subtitle_format: FakeUpload['subtitle_format']
         email_when_ready: boolean
+        translate_to: string | null
       }
       this.startRequests.push(body)
       if (this.onStart) return this.onStart(route, request)
@@ -126,6 +131,8 @@ export class FakeApi {
         language: body.language,
         subtitle_format: body.subtitle_format,
         email_when_ready: body.email_when_ready,
+        translate_to: body.translate_to,
+        translation_engine: body.translate_to ? 'local' : null,
         status: 'uploading',
         completed_at: null,
       })
@@ -206,11 +213,16 @@ export class FakeApi {
     return route.fulfill({ status: 404 })
   }
 
-  /** Each time the app polls, move processing one step on: assembling → transcribing 50% → ready. */
+  /**
+   * Each time the app polls, move processing one step on:
+   * assembling → transcribing 50% → (translating 85% when translating) → ready.
+   */
   private advance(upload: FakeUpload) {
     if (upload.status === 'assembling' || upload.status === 'uploaded') {
       Object.assign(upload, { status: 'transcribing', progress: 50, completed_at: '2026-10-20T12:05:00.000000Z' })
-    } else if (upload.status === 'transcribing') {
+    } else if (upload.status === 'transcribing' && upload.translate_to) {
+      Object.assign(upload, { status: 'translating', progress: 85 })
+    } else if (upload.status === 'transcribing' || upload.status === 'translating') {
       Object.assign(upload, {
         status: 'ready',
         progress: null,

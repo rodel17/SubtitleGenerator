@@ -35,8 +35,10 @@ class GenerateSubtitles implements ShouldQueue
         $disk = Storage::disk(config('uploads.disk'));
         $this->upload->reportProgress(95);
 
-        $segments = json_decode($disk->get($this->upload->transcriptPath()), true, flags: JSON_THROW_ON_ERROR)['segments'];
-        $built = $cues->build($segments);
+        // The translation when one was made (TranslateTranscript), otherwise the spoken language
+        $path = $disk->exists($this->upload->translationPath()) ? $this->upload->translationPath() : $this->upload->transcriptPath();
+        $transcript = json_decode($disk->get($path), true, flags: JSON_THROW_ON_ERROR);
+        $built = $cues->build($transcript['segments'], $transcript['language'] ?? null);
 
         foreach ($this->upload->subtitleFormats() as $format) {
             $disk->put($this->upload->subtitlePath($format), $writer->write($built, $format));

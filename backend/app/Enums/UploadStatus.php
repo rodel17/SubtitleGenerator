@@ -16,6 +16,9 @@ enum UploadStatus: string
     /** Extracting audio, transcribing and writing subtitle files. */
     case Transcribing = 'transcribing';
 
+    /** Translating the transcript into the chosen language (only when one was chosen). */
+    case Translating = 'translating';
+
     /** Subtitle files are waiting to be downloaded; everything else is already deleted. */
     case Ready = 'ready';
 
@@ -27,6 +30,6 @@ enum UploadStatus: string
      */
     public function isProcessing(): bool
     {
-        return in_array($this, [self::Assembling, self::Transcribing], true);
+        return in_array($this, [self::Assembling, self::Transcribing, self::Translating], true);
     }
 }

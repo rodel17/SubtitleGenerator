@@ -5,6 +5,7 @@ use App\Jobs\AssembleUpload;
 use App\Jobs\ExtractAudio;
 use App\Jobs\GenerateSubtitles;
 use App\Jobs\TranscribeAudio;
+use App\Jobs\TranslateTranscript;
 use App\Models\Upload;
 use App\Models\User;
 use App\Services\ChunkedUploadService;
@@ -64,6 +65,17 @@ it('queues extraction, transcription and subtitles as a chain once the file is a
 
     Queue::assertPushedOn('transcription', ExtractAudio::class);
     Queue::assertPushedWithChain(ExtractAudio::class, [TranscribeAudio::class, GenerateSubtitles::class]);
+});
+
+it('adds a translation step to the chain when a language to translate into was chosen', function () {
+    Storage::fake('local');
+    $bytes = wavBytes();
+    $upload = Upload::factory()->for($this->user)->forContent($bytes)->create(['translate_to' => 'fil', 'translation_engine' => 'local']);
+    sendAllChunks($upload, $bytes);
+
+    $this->postJson("/api/uploads/{$upload->id}/completion")->assertAccepted();
+
+    Queue::assertPushedWithChain(ExtractAudio::class, [TranscribeAudio::class, TranslateTranscript::class, GenerateSubtitles::class]);
 });
 
 it('queues assembly only once when a concurrent request claimed the upload first', function () {

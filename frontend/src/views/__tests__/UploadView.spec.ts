@@ -52,6 +52,8 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     email_when_ready: false,
     email_status: null,
     email_error: null,
+    translate_to: null,
+    translation_engine: null,
     ...overrides,
   }
 }
@@ -266,6 +268,30 @@ describe('generating subtitles', () => {
     await flushPromises()
 
     expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ emailWhenReady: true }))
+  })
+
+  it('translates into the chosen language, on our own server', async () => {
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('clip.mp4')])
+
+    expect(wrapper.find('[data-test="translation-note"]').exists()).toBe(false)
+    await wrapper.get('select#translate-to').setValue('fil')
+    expect(wrapper.get('[data-test="translation-note"]').text()).toBe('Translated on our own server; the text never leaves it.')
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translateTo: 'fil' }))
+  })
+
+  it("doesn't translate unless a language is chosen", async () => {
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('clip.mp4')])
+
+    expect(wrapper.get<HTMLSelectElement>('select#translate-to').element.value).toBe('')
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translateTo: undefined }))
   })
 
   it('defaults to auto-detect and SRT', async () => {

@@ -33,6 +33,8 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     email_when_ready: false,
     email_status: null,
     email_error: null,
+    translate_to: null,
+    translation_engine: null,
     ...overrides,
   }
 }
@@ -128,9 +130,18 @@ describe('uploadInChunks', () => {
         language: 'ja',
         subtitle_format: 'vtt',
         email_when_ready: false,
+        translate_to: null,
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
+  })
+
+  it('asks the server to translate the subtitles when a language was chosen', async () => {
+    routeRequests()
+
+    await uploadInChunks(fileOf(45), options({ translateTo: 'fil' }))
+
+    expect(post.mock.calls[0]![1]).toMatchObject({ translate_to: 'fil' })
   })
 
   it('asks the server to email the subtitles when that was chosen', async () => {

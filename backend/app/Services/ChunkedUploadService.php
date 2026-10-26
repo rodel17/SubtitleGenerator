@@ -24,7 +24,7 @@ class ChunkedUploadService
     /**
      * Start a chunked upload, owned by $user, for a file the client is about to send.
      *
-     * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, subtitle_format: string, email_when_ready?: bool}  $attributes
+     * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, translate_to?: string|null, subtitle_format: string, email_when_ready?: bool}  $attributes
      */
     public function start(User $user, array $attributes): Upload
     {
@@ -39,6 +39,9 @@ class ChunkedUploadService
             'chunk_size' => $chunkSize,
             'total_chunks' => (int) ceil($attributes['size'] / $chunkSize),
             'language' => $attributes['language'] ?? null,
+            'translate_to' => $attributes['translate_to'] ?? null,
+            // Only the local engine exists so far; Enhanced (Azure) comes later
+            'translation_engine' => isset($attributes['translate_to']) ? 'local' : null,
             'subtitle_format' => $attributes['subtitle_format'],
             'email_when_ready' => (bool) ($attributes['email_when_ready'] ?? false),
             'status' => UploadStatus::Uploading,
@@ -176,7 +179,7 @@ class ChunkedUploadService
     }
 
     /**
-     * Delete everything stored for the upload: chunks, media, audio, transcript and subtitles.
+     * Delete everything stored for the upload: chunks, media, audio, transcript, translation and subtitles.
      */
     public function deleteFiles(Upload $upload): void
     {
@@ -186,6 +189,7 @@ class ChunkedUploadService
         $disk->deleteDirectory($upload->audioDirectory());
         $disk->delete([
             $upload->transcriptPath(),
+            $upload->translationPath(),
             $upload->subtitlePath('srt'),
             $upload->subtitlePath('vtt'),
         ]);
@@ -196,7 +200,7 @@ class ChunkedUploadService
     }
 
     /**
-     * Delete everything except the subtitle files: chunks, media, audio and transcript.
+     * Delete everything except the subtitle files: chunks, media, audio, transcript and translation.
      * Runs as soon as the subtitles are written. A null `path` afterwards means the media is gone.
      */
     public function deleteWorkingFiles(Upload $upload): void
@@ -205,7 +209,7 @@ class ChunkedUploadService
 
         $disk->deleteDirectory($this->chunkDirectory($upload));
         $disk->deleteDirectory($upload->audioDirectory());
-        $disk->delete($upload->transcriptPath());
+        $disk->delete([$upload->transcriptPath(), $upload->translationPath()]);
 
         if ($upload->path !== null) {
             $disk->delete($upload->path);
@@ -232,8 +236,8 @@ class ChunkedUploadService
             }
         }
 
-        // uploads/{id}.ext, transcripts/{id}.json and subtitles/{id}.srt|vtt are files named after it
-        foreach (['uploads', 'transcripts', 'subtitles'] as $parent) {
+        // uploads/{id}.ext, transcripts/{id}.json, translations/{id}.json and subtitles/{id}.srt|vtt are files named after it
+        foreach (['uploads', 'transcripts', 'translations', 'subtitles'] as $parent) {
             $files = collect($disk->files($parent))->groupBy(fn (string $path): string => pathinfo($path, PATHINFO_FILENAME));
 
             foreach ($this->unknownIds($files->keys()->all()) as $id) {

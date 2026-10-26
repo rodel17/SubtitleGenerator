@@ -12,6 +12,8 @@ export interface ChunkedUploadOptions {
   format: SubtitleFormat
   /** Have the server email the subtitles as soon as they're ready */
   emailWhenReady?: boolean
+  /** Translate the subtitles into this language (see TRANSLATION_TARGETS) */
+  translateTo?: string
   signal: AbortSignal
   /** Called once the API has created the upload, before any chunk is sent */
   onStarted?: (upload: UploadResource) => void
@@ -81,6 +83,7 @@ export async function uploadInChunks(
       language: options.language,
       subtitle_format: options.format,
       email_when_ready: options.emailWhenReady ?? false,
+      translate_to: options.translateTo ?? null,
     },
     { signal: options.signal },
   )
