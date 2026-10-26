@@ -5,13 +5,18 @@ import { AxiosError, type AxiosInstance } from 'axios'
 
 import { api } from '@/lib/api'
 import { resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
-import { useUploadsStore } from '@/stores/uploads'
+import { useAuthStore } from '@/stores/auth'
+import { POLL_INTERVAL_MS, useUploadsStore } from '@/stores/uploads'
 import type { UploadResource } from '@/types/upload'
 import UploadView from '../UploadView.vue'
 
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
-  api: { get: vi.fn<AxiosInstance['get']>(), delete: vi.fn<AxiosInstance['delete']>() },
+  api: {
+    get: vi.fn<AxiosInstance['get']>(),
+    post: vi.fn<AxiosInstance['post']>(),
+    delete: vi.fn<AxiosInstance['delete']>(),
+  },
 }))
 vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/chunkedUpload')>()),
@@ -44,6 +49,9 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
     expires_at: null,
+    email_when_ready: false,
+    email_status: null,
+    email_error: null,
     ...overrides,
   }
 }
@@ -77,7 +85,9 @@ const clearButton = (wrapper: Awaited<ReturnType<typeof mountView>>) =>
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  useAuthStore().user = { id: 1, name: 'Ada Lovelace', email: 'ada@example.com', avatar: null }
   get.mockReset().mockResolvedValue({ data: { data: [] } })
+  vi.mocked(api.post).mockReset()
   upload.mockReset().mockResolvedValue(resource())
   resumeUpload.mockReset()
   vi.mocked(api.delete).mockReset()
@@ -144,7 +154,7 @@ describe('in progress list', () => {
     const wrapper = await mountView()
 
     expect(wrapper.text().replace(/\s+/g, ' ')).toContain(
-      "deleted from our servers as soon as you download the subtitles, or 6 hours after processing if you don't",
+      "deleted from our servers as soon as you download or email the subtitles, or 6 hours after processing if you don't",
     )
   })
 })
@@ -240,6 +250,22 @@ describe('generating subtitles', () => {
 
     expect(upload).toHaveBeenCalledWith(clip, expect.objectContaining({ language: 'ja', format: 'vtt' }))
     expect(wrapper.get('[role="dialog"]').text().replace(/\s+/g, ' ')).toContain('clip.mp4 · Japanese · 10 B')
+  })
+
+  it("offers to email the subtitles to the user's own address when ready", async () => {
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('clip.mp4')])
+    const checkbox = wrapper.get<HTMLInputElement>('[data-test="email-when-ready"]')
+
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain(
+      "Email the subtitles to ada@example.com when they're ready, so you can close this page",
+    )
+    expect(checkbox.element.checked).toBe(false)
+    await checkbox.setValue(true)
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ emailWhenReady: true }))
   })
 
   it('defaults to auto-detect and SRT', async () => {
@@ -504,6 +530,48 @@ describe('ready subtitles', () => {
     await flushPromises()
 
     expect(dialog(wrapper).text()).toContain('second.mp4')
+  })
+
+  it('emails the subtitles from the dialog, then lists them as on their way', async () => {
+    vi.useFakeTimers()
+    const wrapper = await mountWithReady({ name: 'interview.mp4' })
+    vi.mocked(api.post).mockResolvedValue({
+      data: { data: resource({ id: 'server-1', name: 'interview.mp4', email_status: 'sending' }) },
+    })
+
+    expect(dialog(wrapper).text()).toContain('Sends to ada@example.com')
+    await dialogButton(wrapper, 'Email to me').trigger('click')
+    await flushPromises()
+
+    expect(api.post).toHaveBeenCalledWith('/uploads/server-1/email')
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.get('ul').text()).toContain('Emailing to you…')
+
+    get.mockRejectedValue(new AxiosError('Not Found', 'ERR_BAD_REQUEST', undefined, undefined, {
+      status: 404, statusText: '', data: {}, headers: {}, config: {} as never,
+    }))
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text().replace(/\s+/g, ' ')).toContain(
+      'The subtitles for interview.mp4 were emailed to you and deleted from our servers.',
+    )
+    expect(wrapper.find('ul').exists()).toBe(false)
+
+    await wrapper.get('button[aria-label="Dismiss notice for interview.mp4"]').trigger('click')
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+    vi.useRealTimers()
+  })
+
+  it('shows the dialog again with the reason when the email could not be sent', async () => {
+    const wrapper = await mountWithReady({
+      email_status: 'failed',
+      email_error: "Email isn't available right now. Please download your subtitles instead.",
+    })
+
+    expect(dialog(wrapper).get('[role="alert"]').text()).toBe(
+      "Email isn't available right now. Please download your subtitles instead.",
+    )
   })
 
   it('discards the subtitles only after a second confirmation', async () => {

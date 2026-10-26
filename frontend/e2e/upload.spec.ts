@@ -190,6 +190,31 @@ test.describe('ready subtitles', () => {
     expect(api.deletions).toEqual([])
   })
 
+  test("emails them to the user's own address, then says they were sent and deleted", async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'done', name: 'interview.mp4' })]
+    await page.goto('/')
+
+    await expect(readyDialog(page)).toContainText('Sends to ada@example.com')
+    await readyDialog(page).getByRole('button', { name: 'Email to me' }).click()
+
+    await expect(readyDialog(page)).toBeHidden()
+    await expect(page.getByRole('status')).toContainText(
+      'The subtitles for interview.mp4 were emailed to you and deleted from our servers.',
+    )
+    expect(api.emails).toEqual(['done'])
+  })
+
+  test('offers the download again with the reason when the email cannot be sent', async ({ page }) => {
+    api.uploads = [fakeUpload({ id: 'done' })]
+    api.onEmail = (route) => api.json(route, 409, { message: 'These subtitles are already being emailed.' })
+    await page.goto('/')
+
+    await readyDialog(page).getByRole('button', { name: 'Email to me' }).click()
+
+    await expect(readyDialog(page).getByRole('alert')).toHaveText('These subtitles are already being emailed.')
+    await expect(readyDialog(page).getByRole('button', { name: 'Download SRT' })).toBeEnabled()
+  })
+
   test('discards the subtitles without saving after a second confirmation', async ({ page }) => {
     api.uploads = [fakeUpload({ id: 'unwanted' })]
     await page.goto('/')
@@ -295,11 +320,28 @@ test.describe('uploading', () => {
         last_modified: expect.any(Number),
         language: 'ja',
         subtitle_format: 'vtt',
+        email_when_ready: false,
       },
     ])
     expect(api.chunkIndexes.toSorted()).toEqual([0, 1])
     expect(api.completions).toEqual(['upload-1'])
     await expect(page.getByText('Selected')).toHaveCount(0)
+  })
+
+  test('emails the subtitles without asking when that was chosen before uploading', async ({ page }) => {
+    await page.goto('/')
+    await chooseWav(page, 'interview.wav')
+    await page.getByRole('checkbox', { name: /Email the subtitles to ada@example\.com/ }).check()
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+
+    await expect(page.getByRole('status')).toContainText(
+      'The subtitles for interview.wav were emailed to you and deleted from our servers.',
+      { timeout: 10_000 },
+    )
+    await expect(readyDialog(page)).toHaveCount(0)
+    expect(api.startRequests[0]).toMatchObject({ email_when_ready: true })
+    expect(api.emails).toEqual(['upload-1'])
   })
 
   test('shows the server reason when it refuses to start the upload', async ({ page }) => {

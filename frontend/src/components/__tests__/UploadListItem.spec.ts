@@ -88,6 +88,17 @@ describe('UploadListItem', () => {
     },
   )
 
+  it.each([
+    ['being sent', { emailStatus: 'sending' as const }],
+    ['chosen before uploading', { emailWhenReady: true }],
+  ])('shows ready subtitles that are %s as on their way by email, with nothing to click', (_case, email) => {
+    const wrapper = mount(UploadListItem, { props: { item: item({ status: 'ready', ...email }) } })
+
+    expect(wrapper.text()).toContain('Emailing to you…')
+    expect(wrapper.get('[role="progressbar"]').find('.animate-indeterminate').exists()).toBe(true)
+    expect(wrapper.findAll('button')).toHaveLength(0)
+  })
+
   it('leaves out details that are not set', () => {
     const wrapper = mount(UploadListItem, {
       props: { item: item({ status: 'queued', language: undefined, format: undefined, size: 2048 }) },

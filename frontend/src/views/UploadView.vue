@@ -8,10 +8,12 @@ import SubtitlesReadyDialog from '@/components/upload/SubtitlesReadyDialog.vue'
 import UploadListItem from '@/components/upload/UploadListItem.vue'
 import { formatBytes } from '@/lib/format'
 import { localId } from '@/lib/id'
+import { useAuthStore } from '@/stores/auth'
 import { useUploadsStore } from '@/stores/uploads'
 import {
   ACCEPTED_EXTENSIONS,
   isAcceptedFile,
+  isEmailing,
   LANGUAGES,
   MAX_FILE_SIZE,
   RETENTION_HOURS,
@@ -21,6 +23,7 @@ import {
 } from '@/types/upload'
 
 const uploads = useUploadsStore()
+const auth = useAuthStore()
 
 interface SelectedFile {
   id: string
@@ -30,6 +33,8 @@ interface SelectedFile {
 const selectedFiles = ref<SelectedFile[]>([])
 const language = ref<string>(LANGUAGES[0].value)
 const format = ref<SubtitleFormat>('srt')
+/** Email the subtitles as soon as they're ready, so the page can be closed */
+const emailWhenReady = ref(false)
 
 function addFiles(files: File[]) {
   for (const file of files) {
@@ -61,6 +66,7 @@ function generate() {
     selectedFiles.value.map((selected) => selected.file),
     language.value,
     format.value,
+    emailWhenReady.value,
   )
   selectedFiles.value = []
 }
@@ -138,8 +144,10 @@ function cancelRemove() {
   removalError.value = null
 }
 
-// Ready subtitles are not listed; the dialog asks for them to be downloaded (or discarded)
-const listedItems = computed(() => uploads.items.filter((item) => item.status !== 'ready'))
+// Ready subtitles are only listed while being emailed; otherwise the dialog asks for them
+const listedItems = computed(() =>
+  uploads.items.filter((item) => item.status !== 'ready' || isEmailing(item)),
+)
 const isDiscarding = ref(false)
 const discardError = ref<string | null>(null)
 
@@ -238,12 +246,26 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
         <FormatToggle v-model="format" />
       </div>
 
+      <label class="flex cursor-pointer items-start gap-2.5 text-sm text-slate-700">
+        <input
+          v-model="emailWhenReady"
+          type="checkbox"
+          class="mt-0.5 size-4 shrink-0 cursor-pointer accent-accent"
+          data-test="email-when-ready"
+        />
+        <span>
+          Email the subtitles to
+          <span class="font-medium break-all text-slate-900">{{ auth.user?.email ?? 'me' }}</span>
+          when they're ready, so you can close this page
+        </span>
+      </label>
+
       <div
         class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5"
       >
         <span class="text-[13px] text-slate-600">
-          Files are processed privately and deleted from our servers as soon as you download the
-          subtitles, or {{ RETENTION_HOURS }} hours after processing if you don't.
+          Files are processed privately and deleted from our servers as soon as you download or
+          email the subtitles, or {{ RETENTION_HOURS }} hours after processing if you don't.
         </span>
         <div class="flex gap-2.5">
           <button
@@ -268,6 +290,28 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
 
     <section class="flex flex-col gap-3">
       <h2 class="text-base font-semibold">In progress</h2>
+
+      <p
+        v-for="notice in uploads.emailed"
+        :key="notice.id"
+        role="status"
+        class="flex items-start justify-between gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900"
+      >
+        <span>
+          The subtitles for <span class="font-semibold break-all">{{ notice.name }}</span> were
+          emailed to you and deleted from our servers.
+        </span>
+        <button
+          type="button"
+          :aria-label="`Dismiss notice for ${notice.name}`"
+          class="shrink-0 cursor-pointer rounded-md p-0.5 text-green-800 hover:bg-green-100"
+          @click="uploads.dismissEmailed(notice.id)"
+        >
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </p>
 
       <ul
         v-if="listedItems.length"
@@ -317,9 +361,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
     <SubtitlesReadyDialog
       v-if="uploads.nextReady"
       :item="uploads.nextReady"
+      :email="auth.user?.email"
       :discarding="isDiscarding"
       :discard-error="discardError"
       @download="uploads.download"
+      @email="uploads.email"
       @discard="discard"
     />
   </main>

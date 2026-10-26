@@ -10,7 +10,11 @@ import { POLL_INTERVAL_MS, useUploadsStore } from '../uploads'
 
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
-  api: { get: vi.fn<AxiosInstance['get']>(), delete: vi.fn<AxiosInstance['delete']>() },
+  api: {
+    get: vi.fn<AxiosInstance['get']>(),
+    post: vi.fn<AxiosInstance['post']>(),
+    delete: vi.fn<AxiosInstance['delete']>(),
+  },
 }))
 vi.mock('@/lib/download', () => ({ saveBlob: vi.fn<typeof saveBlob>() }))
 vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
@@ -21,6 +25,7 @@ vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
 
 const get = vi.mocked(api.get)
 const destroy = vi.mocked(api.delete)
+const post = vi.mocked(api.post)
 const upload = vi.mocked(uploadInChunks)
 const resumeUpload = vi.mocked(resumeInChunks)
 const save = vi.mocked(saveBlob)
@@ -43,6 +48,9 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
     expires_at: null,
+    email_when_ready: false,
+    email_status: null,
+    email_error: null,
     ...overrides,
   }
 }
@@ -69,6 +77,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   get.mockReset()
   destroy.mockReset().mockResolvedValue({ data: '' })
+  post.mockReset()
   upload.mockReset()
   resumeUpload.mockReset()
   save.mockReset()
@@ -113,6 +122,9 @@ describe('fetchRecent', () => {
         format: 'vtt',
         downloadUrl: 'http://api.test/uploads/server-1/subtitles',
         expiresAt: '2026-10-20T18:01:00.000000Z',
+        emailWhenReady: false,
+        emailStatus: undefined,
+        emailError: undefined,
       },
     ])
   })
@@ -227,6 +239,17 @@ describe('enqueue', () => {
 
     expect(store.items.map((item) => item.name)).toEqual(['a.mp4', 'b.mp3', 'old.txt'])
     expect(store.items[1]).toMatchObject({ kind: 'audio', size: 25, language: 'fil', format: 'both' })
+  })
+
+  it('passes on the choice to email the subtitles when ready', async () => {
+    upload.mockResolvedValue(resource({ status: 'assembling', email_when_ready: true }))
+    const store = useUploadsStore()
+
+    store.enqueue([file('a.mp4')], 'en', 'srt', true)
+    await tick()
+
+    expect(store.items[0]!.emailWhenReady).toBe(true)
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ emailWhenReady: true }))
   })
 
   it('uploads the file with the chosen language and format', async () => {
@@ -919,5 +942,116 @@ describe('nextReady', () => {
     await store.fetchRecent()
 
     expect(store.nextReady).toBeUndefined()
+  })
+})
+
+describe('email', () => {
+  async function readyStore(overrides: Partial<UploadResource> = {}) {
+    get.mockResolvedValueOnce({ data: { data: [resource({ id: 'server-1', name: 'Team Interview.mp4', ...overrides })] } })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+    return store
+  }
+
+  it('asks the server to email the subtitles, and stops offering them for download', async () => {
+    vi.useFakeTimers()
+    const store = await readyStore()
+    post.mockResolvedValue({ data: { data: resource({ id: 'server-1', email_status: 'sending' }) } })
+
+    await store.email('server-1')
+
+    expect(post).toHaveBeenCalledWith('/uploads/server-1/email')
+    expect(store.items[0]).toMatchObject({ status: 'ready', emailStatus: 'sending', emailRequesting: false })
+    expect(store.nextReady).toBeUndefined()
+  })
+
+  it('marks the request as running until the server answers', async () => {
+    const store = await readyStore()
+    const response = deferred<{ data: { data: UploadResource } }>()
+    post.mockReturnValue(response.promise)
+
+    const emailing = store.email('server-1')
+    expect(store.items[0]!.emailRequesting).toBe(true)
+    response.resolve({ data: { data: resource({ email_status: 'sending' }) } })
+    await emailing
+
+    expect(store.items[0]!.emailRequesting).toBe(false)
+  })
+
+  it('ignores a second click while the request is running', async () => {
+    const store = await readyStore()
+    post.mockReturnValue(new Promise(() => {}))
+
+    void store.email('server-1')
+    await store.email('server-1')
+
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps offering the download and shows why when the server refuses', async () => {
+    const store = await readyStore()
+    post.mockRejectedValue(httpError(409, { message: 'These subtitles are already being emailed.' }))
+
+    await store.email('server-1')
+
+    expect(store.items[0]).toMatchObject({ emailError: 'These subtitles are already being emailed.', emailRequesting: false })
+    expect(store.nextReady?.id).toBe('server-1')
+  })
+
+  it('removes the row and tells the user once the server has sent the email and deleted the upload', async () => {
+    vi.useFakeTimers()
+    const store = await readyStore()
+    post.mockResolvedValue({ data: { data: resource({ id: 'server-1', email_status: 'sending' }) } })
+    get.mockRejectedValue(httpError(404))
+
+    await store.email('server-1')
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(store.items).toEqual([])
+    expect(store.emailed).toEqual([{ id: 'server-1', name: 'Team Interview.mp4' }])
+  })
+
+  it('offers the download again when the email could not be sent', async () => {
+    vi.useFakeTimers()
+    const store = await readyStore()
+    post.mockResolvedValue({ data: { data: resource({ id: 'server-1', email_status: 'sending' }) } })
+    get.mockResolvedValue({
+      data: {
+        data: resource({
+          id: 'server-1',
+          email_status: 'failed',
+          email_error: "Email isn't available right now. Please download your subtitles instead.",
+        }),
+      },
+    })
+
+    await store.email('server-1')
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(store.nextReady).toMatchObject({
+      id: 'server-1',
+      emailStatus: 'failed',
+      emailError: "Email isn't available right now. Please download your subtitles instead.",
+    })
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+    expect(get).toHaveBeenCalledTimes(2) // the list, then one poll: it stopped asking
+  })
+
+  it('never offers subtitles for download that are being emailed because that was chosen before uploading', async () => {
+    vi.useFakeTimers()
+    const store = await readyStore({ email_when_ready: true, email_status: 'sending' })
+
+    expect(store.nextReady).toBeUndefined()
+  })
+
+  it('lets the user dismiss the "emailed" notice', async () => {
+    vi.useFakeTimers()
+    const store = await readyStore({ email_status: 'sending' })
+    get.mockRejectedValue(httpError(404))
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    store.dismissEmailed('server-1')
+
+    expect(store.emailed).toEqual([])
   })
 })

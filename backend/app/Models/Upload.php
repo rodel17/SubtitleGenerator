@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\EmailStatus;
 use App\Enums\UploadStatus;
 use App\Services\ChunkedUploadService;
 use Database\Factories\UploadFactory;
@@ -35,8 +36,11 @@ class Upload extends Model
         'total_chunks',
         'language',
         'subtitle_format',
+        'email_when_ready',
         'status',
         'error',
+        'email_status',
+        'email_error',
         'path',
         'completed_at',
         'finished_at',
@@ -69,7 +73,9 @@ class Upload extends Model
             'size' => 'integer',
             'chunk_size' => 'integer',
             'total_chunks' => 'integer',
+            'email_when_ready' => 'boolean',
             'status' => UploadStatus::class,
+            'email_status' => EmailStatus::class,
             'completed_at' => 'datetime',
             'finished_at' => 'datetime',
         ];
@@ -182,6 +188,14 @@ class Upload extends Model
     public function subtitlePath(string $format): string
     {
         return "subtitles/{$this->id}.{$format}";
+    }
+
+    /**
+     * "Team Interview.mp4" -> "Team Interview.srt": what the user gets, by download or email.
+     */
+    public function subtitleFileName(string $format): string
+    {
+        return pathinfo($this->original_name, PATHINFO_FILENAME).".{$format}";
     }
 
     private function progressCacheKey(): string

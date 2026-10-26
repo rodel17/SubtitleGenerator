@@ -6,23 +6,29 @@ import { languageLabel, type UploadItem } from '@/types/upload'
 
 /**
  * Shown when an upload's subtitles are ready. It can't be closed (no Esc, no
- * backdrop click): the user downloads the subtitles, after which everything is
- * deleted, or discards them on purpose.
+ * backdrop click): the user downloads or emails the subtitles, after which
+ * everything is deleted, or discards them on purpose.
  */
 const props = withDefaults(
   defineProps<{
     item: UploadItem
+    /** The signed-in user's address; emails only ever go there */
+    email?: string
     /** Discarding is running: show a spinner and block the buttons */
     discarding?: boolean
     discardError?: string | null
   }>(),
-  { discarding: false, discardError: null },
+  { email: undefined, discarding: false, discardError: null },
 )
 
 const emit = defineEmits<{
   download: [id: string]
+  email: [id: string]
   discard: [id: string]
 }>()
+
+const isBusy = computed(() => props.item.downloading === true || props.item.emailRequesting === true)
+const error = computed(() => props.item.emailError ?? props.item.downloadError)
 
 const confirmingDiscard = ref(false)
 const downloadButton = ref<HTMLButtonElement | null>(null)
@@ -84,12 +90,13 @@ onBeforeUnmount(() => previouslyFocused?.focus())
           · {{ detailsLabel }}
         </p>
         <p class="text-[13px] leading-normal text-slate-600">
-          They're deleted from our servers as soon as you download them<template v-if="expiresAt"
+          They're deleted from our servers as soon as you download or email them<template
+            v-if="expiresAt"
             >, or at {{ expiresAt }} if you don't</template
           >.
         </p>
-        <p v-if="item.downloadError" role="alert" class="text-sm text-red-700">
-          {{ item.downloadError }}
+        <p v-if="error" role="alert" class="text-sm text-red-700">
+          {{ error }}
         </p>
       </div>
 
@@ -98,7 +105,7 @@ onBeforeUnmount(() => previouslyFocused?.focus())
           ref="downloadButton"
           type="button"
           class="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-[10px] bg-accent px-5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-wait disabled:opacity-80"
-          :disabled="item.downloading"
+          :disabled="isBusy"
           :aria-busy="item.downloading"
           @click="emit('download', item.id)"
         >
@@ -120,8 +127,36 @@ onBeforeUnmount(() => previouslyFocused?.focus())
         </button>
         <button
           type="button"
+          class="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+          :disabled="isBusy"
+          :aria-busy="item.emailRequesting"
+          :aria-describedby="email ? 'ready-email-to' : undefined"
+          @click="emit('email', item.id)"
+        >
+          <LoadingSpinner v-if="item.emailRequesting" class="size-4" />
+          <svg
+            v-else
+            class="size-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="m3 7 9 6 9-6" />
+          </svg>
+          {{ item.emailRequesting ? 'Sending…' : 'Email to me' }}
+        </button>
+        <p v-if="email" id="ready-email-to" class="-mt-1 text-[13px] text-slate-600">
+          Sends to <span class="font-medium break-all text-slate-900">{{ email }}</span>
+        </p>
+        <button
+          type="button"
           class="cursor-pointer text-[13px] font-medium text-slate-600 underline underline-offset-2 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="item.downloading"
+          :disabled="isBusy"
           @click="confirmingDiscard = true"
         >
           Discard without saving

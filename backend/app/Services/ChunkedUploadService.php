@@ -24,7 +24,7 @@ class ChunkedUploadService
     /**
      * Start a chunked upload, owned by $user, for a file the client is about to send.
      *
-     * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, subtitle_format: string}  $attributes
+     * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, subtitle_format: string, email_when_ready?: bool}  $attributes
      */
     public function start(User $user, array $attributes): Upload
     {
@@ -40,6 +40,7 @@ class ChunkedUploadService
             'total_chunks' => (int) ceil($attributes['size'] / $chunkSize),
             'language' => $attributes['language'] ?? null,
             'subtitle_format' => $attributes['subtitle_format'],
+            'email_when_ready' => (bool) ($attributes['email_when_ready'] ?? false),
             'status' => UploadStatus::Uploading,
         ]);
     }

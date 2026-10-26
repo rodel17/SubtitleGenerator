@@ -30,6 +30,9 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: null,
     expires_at: null,
+    email_when_ready: false,
+    email_status: null,
+    email_error: null,
     ...overrides,
   }
 }
@@ -124,9 +127,18 @@ describe('uploadInChunks', () => {
         last_modified: file.lastModified,
         language: 'ja',
         subtitle_format: 'vtt',
+        email_when_ready: false,
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
+  })
+
+  it('asks the server to email the subtitles when that was chosen', async () => {
+    routeRequests()
+
+    await uploadInChunks(fileOf(45), options({ emailWhenReady: true }))
+
+    expect(post.mock.calls[0]![1]).toMatchObject({ email_when_ready: true })
   })
 
   it('sends a null MIME type when the browser does not know one', async () => {

@@ -10,6 +10,8 @@ const MAX_ATTEMPTS = 3
 export interface ChunkedUploadOptions {
   language: string
   format: SubtitleFormat
+  /** Have the server email the subtitles as soon as they're ready */
+  emailWhenReady?: boolean
   signal: AbortSignal
   /** Called once the API has created the upload, before any chunk is sent */
   onStarted?: (upload: UploadResource) => void
@@ -78,6 +80,7 @@ export async function uploadInChunks(
       last_modified: file.lastModified,
       language: options.language,
       subtitle_format: options.format,
+      email_when_ready: options.emailWhenReady ?? false,
     },
     { signal: options.signal },
   )

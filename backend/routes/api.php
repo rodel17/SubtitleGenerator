@@ -5,6 +5,7 @@ use App\Http\Controllers\SubtitleDownloadController;
 use App\Http\Controllers\UploadChunkController;
 use App\Http\Controllers\UploadCompletionController;
 use App\Http\Controllers\UploadController;
+use App\Http\Controllers\UploadEmailController;
 use App\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -36,4 +37,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/uploads/{upload}/subtitles', SubtitleDownloadController::class)
         ->can('view', 'upload')
         ->name('uploads.subtitles.show');
+    Route::post('/uploads/{upload}/email', [UploadEmailController::class, 'store'])
+        ->can('update', 'upload')
+        ->name('uploads.email.store');
 });

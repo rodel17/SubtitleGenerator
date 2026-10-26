@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { formatBytes } from '@/lib/format'
-import { languageLabel, type UploadItem } from '@/types/upload'
+import { isEmailing, languageLabel, type UploadItem } from '@/types/upload'
 
-// Ready uploads are not listed: SubtitlesReadyDialog asks the user to download them
+// Ready uploads are only listed while being emailed; otherwise SubtitlesReadyDialog asks for them
 
 const props = defineProps<{
   item: UploadItem
@@ -32,15 +32,18 @@ const detailsLabel = computed(() =>
     .join(' · '),
 )
 
-const isInProgress = computed(() =>
-  ['uploading', 'processing', 'uploaded', 'transcribing'].includes(props.item.status),
+const emailing = computed(() => isEmailing(props.item))
+
+const isInProgress = computed(
+  () => ['uploading', 'processing', 'uploaded', 'transcribing'].includes(props.item.status) || emailing.value,
 )
 
-/** Waiting in the transcription queue has no measurable progress */
-const hasProgress = computed(() => props.item.status !== 'uploaded')
+/** Waiting in the transcription queue, or for the email to go out, has no measurable progress */
+const hasProgress = computed(() => props.item.status !== 'uploaded' && !emailing.value)
 
 const progressLabel = computed(() => {
   const percent = `${props.item.progress ?? 0}%`
+  if (emailing.value) return 'Emailing to you…'
   if (props.item.status === 'uploading') return `Uploading · ${percent}`
   if (props.item.status === 'processing') return `Finalizing · ${percent}`
   if (props.item.status === 'uploaded') return 'Waiting to transcribe…'
@@ -147,6 +150,9 @@ const secondaryButton =
     >
       Remove
     </button>
+
+    <!-- Being emailed: nothing to do but wait; keeps the row aligned with rows that have an action -->
+    <span v-else-if="emailing" class="size-11" aria-hidden="true" />
 
     <!-- Finalizing, waiting or transcribing on the server: stopping deletes it there -->
     <button

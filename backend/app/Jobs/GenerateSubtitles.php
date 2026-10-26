@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\EmailStatus;
 use App\Models\Upload;
 use App\Services\ChunkedUploadService;
 use App\Services\Transcription\CueBuilder;
@@ -41,10 +42,20 @@ class GenerateSubtitles implements ShouldQueue
             $disk->put($this->upload->subtitlePath($format), $writer->write($built, $format));
         }
 
-        // Only the subtitle files are kept, until the user downloads them
+        // Only the subtitle files are kept, until the user downloads them (or they are emailed)
         $uploads->deleteWorkingFiles($this->upload);
 
+        // Emailing was chosen before uploading: mark it as sending first, so the page
+        // never offers to download subtitles that are already on their way
+        if ($this->upload->email_when_ready) {
+            $this->upload->update(['email_status' => EmailStatus::Sending]);
+        }
+
         $this->upload->markReady();
+
+        if ($this->upload->email_when_ready) {
+            SendSubtitlesEmail::dispatch($this->upload);
+        }
     }
 
     public function failed(?Throwable $exception): void
