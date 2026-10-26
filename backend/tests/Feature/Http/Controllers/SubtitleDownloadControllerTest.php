@@ -46,6 +46,17 @@ it('downloads both files in one zip when both formats were requested', function 
     $zip->close();
 });
 
+it('names translated subtitles with the language they were translated into', function (string $format, string $name) {
+    $upload = Upload::factory()->for($this->user)->ready()->create(['original_name' => 'Team Interview.mp4', 'subtitle_format' => $format, 'translate_to' => 'fil']);
+    Storage::disk('local')->put($upload->subtitlePath('srt'), 'x');
+    Storage::disk('local')->put($upload->subtitlePath('vtt'), 'x');
+
+    $this->get("/api/uploads/{$upload->id}/subtitles")->assertOk()->assertDownload($name);
+})->with([
+    'one format' => ['srt', 'Team Interview.fil.srt'],
+    'both formats' => ['both', 'Team Interview.fil.zip'],
+]);
+
 it('returns 404 until the upload is ready', function (UploadStatus $status) {
     $upload = Upload::factory()->for($this->user)->uploaded()->create(['status' => $status]);
     Storage::disk('local')->put($upload->subtitlePath('srt'), 'x');

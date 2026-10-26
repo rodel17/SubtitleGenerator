@@ -51,6 +51,8 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     email_when_ready: false,
     email_status: null,
     email_error: null,
+    translate_to: null,
+    translation_engine: null,
     ...overrides,
   }
 }
@@ -125,8 +127,23 @@ describe('fetchRecent', () => {
         emailWhenReady: false,
         emailStatus: undefined,
         emailError: undefined,
+        translateTo: undefined,
       },
     ])
+  })
+
+  it('shows uploads being translated, with the language, and keeps following them', async () => {
+    vi.useFakeTimers()
+    get
+      .mockResolvedValueOnce({ data: { data: [resource({ status: 'translating', progress: 76, translate_to: 'fil' })] } })
+      .mockResolvedValueOnce({ data: { data: resource({ status: 'translating', progress: 80, translate_to: 'fil' }) } })
+    const store = useUploadsStore()
+
+    await store.fetchRecent()
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(store.items[0]).toMatchObject({ status: 'translating', progress: 80, translateTo: 'fil' })
+    expect(get).toHaveBeenLastCalledWith('/uploads/server-1')
   })
 
   it('shows uploads that never finished as interrupted, ready to resume', async () => {
@@ -239,6 +256,17 @@ describe('enqueue', () => {
 
     expect(store.items.map((item) => item.name)).toEqual(['a.mp4', 'b.mp3', 'old.txt'])
     expect(store.items[1]).toMatchObject({ kind: 'audio', size: 25, language: 'fil', format: 'both' })
+  })
+
+  it('passes on the language to translate into', async () => {
+    upload.mockResolvedValue(resource({ status: 'assembling', translate_to: 'ja' }))
+    const store = useUploadsStore()
+
+    store.enqueue([file('a.mp4')], 'en', 'srt', false, 'ja')
+    await tick()
+
+    expect(store.items[0]!.translateTo).toBe('ja')
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translateTo: 'ja' }))
   })
 
   it('passes on the choice to email the subtitles when ready', async () => {
@@ -803,6 +831,15 @@ describe('download', () => {
 
     expect(get).toHaveBeenLastCalledWith(downloadUrl, { responseType: 'blob' })
     expect(save).toHaveBeenCalledWith(blob, 'Team Interview.srt')
+  })
+
+  it('saves translated subtitles with the language in the name', async () => {
+    const store = await readyStore({ translate_to: 'fil' })
+    get.mockResolvedValueOnce({ data: new Blob(['x']) })
+
+    await store.download('server-1')
+
+    expect(save).toHaveBeenCalledWith(expect.any(Blob), 'Team Interview.fil.srt')
   })
 
   it('saves both formats as one zip', async () => {

@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Services\Transcription\Transcriber;
 use App\Services\Transcription\WhisperTranscriber;
+use App\Services\Translation\LocalTranslator;
+use App\Services\Translation\Translator;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -17,6 +19,7 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->bind(Transcriber::class, WhisperTranscriber::class);
+        $this->app->bind(Translator::class, LocalTranslator::class);
     }
 
     /**

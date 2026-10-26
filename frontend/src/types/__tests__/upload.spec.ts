@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 
-import { fileExtension, isAcceptedFile, languageLabel, mediaKindOf, subtitleFileName } from '../upload'
+import {
+  fileExtension,
+  isAcceptedFile,
+  languageLabel,
+  mediaKindOf,
+  subtitleFileName,
+  TRANSLATION_TARGETS,
+  translationLabel,
+} from '../upload'
 
 describe('fileExtension', () => {
   it.each([
@@ -77,5 +85,18 @@ describe('subtitleFileName', () => {
     ['Team Interview.mp4', 'both', 'Team Interview.zip'],
   ] as const)('names the %s subtitles %s -> %s', (media, format, expected) => {
     expect(subtitleFileName(media, format)).toBe(expected)
+  })
+})
+
+describe('translations', () => {
+  it('names translated subtitles with the language', () => {
+    expect(subtitleFileName('Team Interview.mp4', 'srt', 'fil')).toBe('Team Interview.fil.srt')
+    expect(subtitleFileName('Team Interview.mp4', 'both', 'ja')).toBe('Team Interview.ja.zip')
+  })
+
+  it('offers Filipino, English, Japanese, Simplified Chinese and Korean', () => {
+    expect(TRANSLATION_TARGETS.map((target) => target.value)).toEqual(['fil', 'en', 'ja', 'zh', 'ko'])
+    expect(translationLabel('zh')).toBe('Chinese (Simplified)')
+    expect(translationLabel('xx')).toBe('xx')
   })
 })

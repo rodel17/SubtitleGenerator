@@ -41,6 +41,13 @@ describe('SubtitlesReadyDialog', () => {
     expect(button(mountDialog({ format }), label)?.exists()).toBe(true)
   })
 
+  it('names the language of translated subtitles', () => {
+    const wrapper = mountDialog({ language: 'en', translateTo: 'fil', format: 'both' })
+
+    expect(wrapper.get('#ready-message').text().replace(/\s+/g, ' ')).toBe('team-interview.mp4 · English → Filipino · 1.2 MB')
+    expect(button(wrapper, 'Download Filipino SRT + VTT (.zip)')?.exists()).toBe(true)
+  })
+
   it('says when the subtitles are deleted if they are not downloaded', () => {
     const expiresAt = '2026-10-25T18:30:00.000000Z'
     const wrapper = mountDialog({ expiresAt })

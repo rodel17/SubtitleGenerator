@@ -16,6 +16,7 @@ it('deletes files left behind by an upload that no longer exists', function () {
         "uploads/{$id}.mp4",
         "audio/{$id}/0000.wav",
         "transcripts/{$id}.json",
+        "translations/{$id}.json",
         "subtitles/{$id}.srt",
         "subtitles/{$id}.vtt",
     ];
@@ -36,6 +37,7 @@ it('keeps the files of uploads that still exist', function () {
         $upload->path,
         "{$upload->audioDirectory()}/0000.wav",
         $upload->transcriptPath(),
+        $upload->translationPath(),
         $upload->subtitlePath('srt'),
     ];
     foreach ($files as $file) {

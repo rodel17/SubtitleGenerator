@@ -99,6 +99,19 @@ describe('UploadListItem', () => {
     expect(wrapper.findAll('button')).toHaveLength(0)
   })
 
+  it('shows translating progress, with a stop button', () => {
+    const wrapper = mount(UploadListItem, { props: { item: item({ status: 'translating', progress: 80, translateTo: 'fil' }) } })
+
+    expect(wrapper.text()).toContain('Translating · 80%')
+    expect(buttonNames(wrapper)).toEqual(['Stop and delete'])
+  })
+
+  it('shows which language a queued file will be translated into', () => {
+    const wrapper = mount(UploadListItem, { props: { item: item({ status: 'queued', language: 'en', translateTo: 'fil' }) } })
+
+    expect(wrapper.text()).toContain('Queued · English → Filipino · SRT · 1.2 MB')
+  })
+
   it('leaves out details that are not set', () => {
     const wrapper = mount(UploadListItem, {
       props: { item: item({ status: 'queued', language: undefined, format: undefined, size: 2048 }) },

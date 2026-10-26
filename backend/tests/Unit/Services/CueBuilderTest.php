@@ -96,6 +96,51 @@ test('a segment without word times is kept whole and wrapped', function () {
     ]]);
 });
 
+test('Japanese words are joined without spaces, on lines of at most 16 characters', function () {
+    $words = [];
+    foreach (['今日は', 'とても', '良い', '天気', 'ですね、', '散歩に', '行きましょう。'] as $index => $word) {
+        $words[] = ['start' => $index * 0.4, 'end' => ($index + 1) * 0.4, 'word' => $word];
+    }
+
+    $cues = (new CueBuilder)->build([['start' => 0.0, 'end' => 2.8, 'text' => '', 'words' => $words]], 'ja');
+
+    expect(implode('', array_map(fn ($cue) => str_replace("\n", '', $cue['text']), $cues)))
+        ->toBe('今日はとても良い天気ですね、散歩に行きましょう。');
+    foreach ($cues as $cue) {
+        expect($cue['text'])->not->toContain(' ');
+        foreach (explode("\n", $cue['text']) as $line) {
+            expect(mb_strlen($line))->toBeLessThanOrEqual(CueBuilder::MAX_LINE_LENGTH_WITHOUT_SPACES);
+        }
+    }
+});
+
+test('a Japanese cue is wrapped between words, never inside one', function () {
+    $words = [];
+    foreach (['アメリカ人の', '皆さん', '自分の', '国のために'] as $index => $word) {
+        $words[] = ['start' => $index * 0.5, 'end' => ($index + 1) * 0.5, 'word' => $word];
+    }
+
+    $cues = (new CueBuilder)->build([['start' => 0.0, 'end' => 2.0, 'text' => '', 'words' => $words]], 'ja');
+
+    expect(array_column($cues, 'text'))->toBe(["アメリカ人の皆さん\n自分の国のために"]);
+});
+
+test('a long line without spaces is wrapped after punctuation near the middle', function () {
+    $cues = (new CueBuilder)->build([[
+        'start' => 0.0,
+        'end' => 3.0,
+        'text' => '我们今天去公园散步，然后一起吃晚饭吧。',
+    ]], 'zh');
+
+    expect($cues[0]['text'])->toBe("我们今天去公园散步，\n然后一起吃晚饭吧。");
+});
+
+test('languages with spaces keep the 42 character lines', function () {
+    $cues = (new CueBuilder)->build([segmentOf('Magandang umaga sa inyong lahat.')], 'fil');
+
+    expect($cues[0]['text'])->toBe('Magandang umaga sa inyong lahat.');
+});
+
 test('blank words are skipped', function () {
     $segment = segmentOf('Hello there.');
     array_splice($segment['words'], 1, 0, [['start' => 0.3, 'end' => 0.3, 'word' => ' ']]);

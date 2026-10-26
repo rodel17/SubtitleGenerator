@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { formatBytes, formatTime } from '@/lib/format'
-import { languageLabel, type UploadItem } from '@/types/upload'
+import { languageLabel, translationLabel, type UploadItem } from '@/types/upload'
 
 /**
  * Shown when an upload's subtitles are ready. It can't be closed (no Esc, no
@@ -35,13 +35,21 @@ const downloadButton = ref<HTMLButtonElement | null>(null)
 const previouslyFocused = document.activeElement as HTMLElement | null
 
 const detailsLabel = computed(() =>
-  [languageLabel(props.item.language), formatBytes(props.item.size)].filter(Boolean).join(' · '),
+  [
+    props.item.translateTo
+      ? `${languageLabel(props.item.language)} → ${translationLabel(props.item.translateTo)}`
+      : languageLabel(props.item.language),
+    formatBytes(props.item.size),
+  ]
+    .filter(Boolean)
+    .join(' · '),
 )
 
 const downloadLabel = computed(() => {
   if (props.item.downloading) return 'Downloading…'
-  if (props.item.format === 'both') return 'Download SRT + VTT (.zip)'
-  return `Download ${(props.item.format ?? 'srt').toUpperCase()}`
+  const language = props.item.translateTo ? `${translationLabel(props.item.translateTo)} ` : ''
+  if (props.item.format === 'both') return `Download ${language}SRT + VTT (.zip)`
+  return `Download ${language}${(props.item.format ?? 'srt').toUpperCase()}`
 })
 
 const expiresAt = computed(() => (props.item.expiresAt ? formatTime(props.item.expiresAt) : null))

@@ -30,6 +30,7 @@ class StoreUploadRequest extends FormRequest
             'mime_type' => ['nullable', 'string', 'max:255'],
             'last_modified' => ['nullable', 'integer', 'min:0'],
             'language' => ['nullable', 'string', 'max:10'],
+            'translate_to' => ['nullable', Rule::in(config('translation.targets'))],
             'subtitle_format' => ['required', Rule::in(['srt', 'vtt', 'both'])],
             'email_when_ready' => ['sometimes', 'boolean'],
         ];

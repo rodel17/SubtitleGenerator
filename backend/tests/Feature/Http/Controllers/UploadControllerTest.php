@@ -69,8 +69,8 @@ describe('show', function () {
         $response->assertOk()
             ->assertExactJsonStructure(['data' => [
                 'id', 'name', 'extension', 'mime_type', 'last_modified', 'size', 'chunk_size', 'total_chunks',
-                'language', 'subtitle_format', 'email_when_ready', 'status', 'progress', 'error', 'email_status',
-                'email_error', 'created_at', 'completed_at', 'expires_at',
+                'language', 'translate_to', 'translation_engine', 'subtitle_format', 'email_when_ready', 'status',
+                'progress', 'error', 'email_status', 'email_error', 'created_at', 'completed_at', 'expires_at',
             ]])
             ->assertJsonPath('data.name', 'Interview.mp4')
             ->assertJsonPath('data.size', 45)
@@ -240,6 +240,26 @@ describe('store', function () {
         'declined' => [false, false],
         'not sent' => [null, false],
     ]);
+
+    it('remembers the language to translate into, translated on our own server', function () {
+        $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt', 'translate_to' => 'fil'])
+            ->assertCreated()
+            ->assertJsonPath('data.translate_to', 'fil')
+            ->assertJsonPath('data.translation_engine', 'local');
+    });
+
+    it('does not translate unless asked', function () {
+        $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt'])
+            ->assertCreated()
+            ->assertJsonPath('data.translate_to', null)
+            ->assertJsonPath('data.translation_engine', null);
+    });
+
+    it('rejects a language it cannot translate into', function (string $language) {
+        $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt', 'translate_to' => $language])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['translate_to']);
+    })->with(['not offered' => 'fr', 'made up' => 'klingon']);
 
     it('rejects an email choice that is not a boolean', function () {
         $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt', 'email_when_ready' => 'please'])

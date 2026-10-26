@@ -29,6 +29,8 @@ class UploadResource extends JsonResource
             'chunk_size' => $this->chunk_size,
             'total_chunks' => $this->total_chunks,
             'language' => $this->language,
+            'translate_to' => $this->translate_to,
+            'translation_engine' => $this->translation_engine,
             'subtitle_format' => $this->subtitle_format,
             'email_when_ready' => $this->email_when_ready,
             'status' => $this->status,

@@ -27,6 +27,7 @@ for _ in $(seq 1 30); do
   if curl -fsS http://localhost:8000/api/test > /dev/null; then
     echo "API is up"
     docker image prune -f > /dev/null # drop the images replaced by this build, so the disk doesn't fill up
+    docker builder prune -f > /dev/null # and the build cache, which otherwise grows by every deploy (it had reached ~5 GB)
     exit 0
   fi
   sleep 2

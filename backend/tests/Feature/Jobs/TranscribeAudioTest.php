@@ -126,6 +126,16 @@ it('sends the pieces in order and reports progress up to 95 percent', function (
     expect($upload->fresh()->progress())->toBe(95);
 });
 
+it('stops its progress at 75 percent when a translation follows', function () {
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'translate_to' => 'fil']);
+    putAudioPiece($upload, 0, 1.0);
+    fakeTranscriber([['language' => 'en', 'segments' => [['start' => 0.0, 'end' => 1.0, 'text' => 'Hi']]]]);
+
+    TranscribeAudio::dispatch($upload);
+
+    expect($upload->fresh()->progress())->toBe(75);
+});
+
 it('keeps later pieces in the language Whisper detected in the first one', function (?string $chosen) {
     $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'language' => $chosen]);
     putAudioPiece($upload, 0, 1.0);
