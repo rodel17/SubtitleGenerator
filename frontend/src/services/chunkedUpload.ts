@@ -1,6 +1,6 @@
 import { isAxiosError, isCancel } from 'axios'
 import { api } from '@/lib/api'
-import type { SubtitleFormat, UploadResource } from '@/types/upload'
+import type { SubtitleFormat, TranslationEngine, UploadResource } from '@/types/upload'
 
 /** Chunks sent at the same time for one file */
 const PARALLEL_CHUNKS = 3
@@ -14,6 +14,8 @@ export interface ChunkedUploadOptions {
   emailWhenReady?: boolean
   /** Translate the subtitles into this language (see TRANSLATION_TARGETS) */
   translateTo?: string
+  /** Standard ("local", the default) or Enhanced ("azure") */
+  translationEngine?: TranslationEngine
   signal: AbortSignal
   /** Called once the API has created the upload, before any chunk is sent */
   onStarted?: (upload: UploadResource) => void
@@ -84,6 +86,7 @@ export async function uploadInChunks(
       subtitle_format: options.format,
       email_when_ready: options.emailWhenReady ?? false,
       translate_to: options.translateTo ?? null,
+      translation_engine: options.translateTo ? (options.translationEngine ?? 'local') : null,
     },
     { signal: options.signal },
   )

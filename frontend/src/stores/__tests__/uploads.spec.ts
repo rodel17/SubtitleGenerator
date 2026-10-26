@@ -53,6 +53,7 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     email_error: null,
     translate_to: null,
     translation_engine: null,
+    translated_with: null,
     ...overrides,
   }
 }
@@ -128,6 +129,8 @@ describe('fetchRecent', () => {
         emailStatus: undefined,
         emailError: undefined,
         translateTo: undefined,
+        translationEngine: undefined,
+        translatedWith: undefined,
       },
     ])
   })
@@ -262,18 +265,31 @@ describe('enqueue', () => {
     upload.mockResolvedValue(resource({ status: 'assembling', translate_to: 'ja' }))
     const store = useUploadsStore()
 
-    store.enqueue([file('a.mp4')], 'en', 'srt', false, 'ja')
+    store.enqueue([file('a.mp4')], 'en', 'srt', { translateTo: 'ja' })
     await tick()
 
-    expect(store.items[0]!.translateTo).toBe('ja')
-    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translateTo: 'ja' }))
+    expect(store.items[0]).toMatchObject({ translateTo: 'ja', translationEngine: 'local' })
+    expect(upload).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ translateTo: 'ja', translationEngine: 'local' }),
+    )
+  })
+
+  it('passes on Enhanced translation when it was chosen', async () => {
+    upload.mockResolvedValue(resource({ status: 'assembling', translate_to: 'ja', translation_engine: 'azure' }))
+    const store = useUploadsStore()
+
+    store.enqueue([file('a.mp4')], 'en', 'srt', { translateTo: 'ja', translationEngine: 'azure' })
+    await tick()
+
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translationEngine: 'azure' }))
   })
 
   it('passes on the choice to email the subtitles when ready', async () => {
     upload.mockResolvedValue(resource({ status: 'assembling', email_when_ready: true }))
     const store = useUploadsStore()
 
-    store.enqueue([file('a.mp4')], 'en', 'srt', true)
+    store.enqueue([file('a.mp4')], 'en', 'srt', { emailWhenReady: true })
     await tick()
 
     expect(store.items[0]!.emailWhenReady).toBe(true)
@@ -1090,5 +1106,45 @@ describe('email', () => {
     store.dismissEmailed('server-1')
 
     expect(store.emailed).toEqual([])
+  })
+})
+
+describe('translation engines', () => {
+  it('offers only Standard until the server says otherwise', () => {
+    expect(useUploadsStore().translationEngines).toEqual(['local'])
+  })
+
+  it('learns from the server whether Enhanced can be offered', async () => {
+    get.mockResolvedValue({ data: { data: ['local', 'azure'] } })
+    const store = useUploadsStore()
+
+    await store.fetchTranslationEngines()
+
+    expect(get).toHaveBeenCalledWith('/translation-engines')
+    expect(store.translationEngines).toEqual(['local', 'azure'])
+  })
+
+  it('falls back to Standard only when the server cannot be asked', async () => {
+    get.mockRejectedValue(networkError())
+    const store = useUploadsStore()
+
+    await store.fetchTranslationEngines()
+
+    expect(store.translationEngines).toEqual(['local'])
+  })
+
+  it('learns which engine actually translated', async () => {
+    vi.useFakeTimers()
+    get
+      .mockResolvedValueOnce({ data: { data: [resource({ status: 'translating', translate_to: 'fil', translation_engine: 'azure' })] } })
+      .mockResolvedValueOnce({
+        data: { data: resource({ status: 'ready', translate_to: 'fil', translation_engine: 'azure', translated_with: 'local' }) },
+      })
+    const store = useUploadsStore()
+    await store.fetchRecent()
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+    expect(store.items[0]).toMatchObject({ translationEngine: 'azure', translatedWith: 'local' })
   })
 })

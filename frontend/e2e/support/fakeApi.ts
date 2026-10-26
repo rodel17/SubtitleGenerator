@@ -11,7 +11,8 @@ export interface FakeUpload {
   total_chunks: number
   language: string | null
   translate_to: string | null
-  translation_engine: string | null
+  translation_engine: 'local' | 'azure' | null
+  translated_with: 'local' | 'azure' | null
   subtitle_format: 'srt' | 'vtt' | 'both'
   email_when_ready: boolean
   status: 'uploading' | 'assembling' | 'uploaded' | 'transcribing' | 'translating' | 'ready' | 'failed'
@@ -40,6 +41,7 @@ export function fakeUpload(overrides: Partial<FakeUpload> = {}): FakeUpload {
     language: 'en',
     translate_to: null,
     translation_engine: null,
+    translated_with: null,
     subtitle_format: 'srt',
     email_when_ready: false,
     status: 'ready',
@@ -76,6 +78,10 @@ export class FakeApi {
   deletions: string[] = []
   /** Uploads whose subtitles the fake server "emailed" (and then deleted, like the real one) */
   emails: string[] = []
+  /** What GET /api/translation-engines answers; add "azure" to offer Enhanced */
+  translationEngines: string[] = ['local']
+  /** Simulate Azure being down: Enhanced translations fall back to "local" */
+  azureUnavailable = false
 
   /** Chunk size the fake server hands out, small so tests need several chunks */
   chunkSize = 4096
@@ -95,6 +101,7 @@ export class FakeApi {
     await this.page.route(/\/api\/user$/, (route) =>
       this.json(route, 200, { data: { id: 1, name: 'Ada Lovelace', email: 'ada@example.com', avatar: null } }),
     )
+    await this.page.route(/\/api\/translation-engines$/, (route) => this.json(route, 200, { data: this.translationEngines }))
     await this.page.route(/\/api\/uploads(\/.*)?$/, (route, request) => this.handle(route, request))
   }
 
@@ -115,6 +122,7 @@ export class FakeApi {
         subtitle_format: FakeUpload['subtitle_format']
         email_when_ready: boolean
         translate_to: string | null
+        translation_engine: 'local' | 'azure' | null
       }
       this.startRequests.push(body)
       if (this.onStart) return this.onStart(route, request)
@@ -132,7 +140,7 @@ export class FakeApi {
         subtitle_format: body.subtitle_format,
         email_when_ready: body.email_when_ready,
         translate_to: body.translate_to,
-        translation_engine: body.translate_to ? 'local' : null,
+        translation_engine: body.translation_engine,
         status: 'uploading',
         completed_at: null,
       })
@@ -228,6 +236,9 @@ export class FakeApi {
         progress: null,
         download_url: downloadUrl(upload.id),
         expires_at: '2026-10-20T18:05:00.000000Z',
+        translated_with: upload.translate_to
+          ? (this.azureUnavailable ? 'local' : upload.translation_engine)
+          : null,
         email_status: upload.email_when_ready ? 'sending' : null,
       })
     }

@@ -31,6 +31,7 @@ class UploadResource extends JsonResource
             'language' => $this->language,
             'translate_to' => $this->translate_to,
             'translation_engine' => $this->translation_engine,
+            'translated_with' => $this->translated_with,
             'subtitle_format' => $this->subtitle_format,
             'email_when_ready' => $this->email_when_ready,
             'status' => $this->status,

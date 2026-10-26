@@ -69,7 +69,7 @@ describe('show', function () {
         $response->assertOk()
             ->assertExactJsonStructure(['data' => [
                 'id', 'name', 'extension', 'mime_type', 'last_modified', 'size', 'chunk_size', 'total_chunks',
-                'language', 'translate_to', 'translation_engine', 'subtitle_format', 'email_when_ready', 'status',
+                'language', 'translate_to', 'translation_engine', 'translated_with', 'subtitle_format', 'email_when_ready', 'status',
                 'progress', 'error', 'email_status', 'email_error', 'created_at', 'completed_at', 'expires_at',
             ]])
             ->assertJsonPath('data.name', 'Interview.mp4')
@@ -253,6 +253,23 @@ describe('store', function () {
             ->assertCreated()
             ->assertJsonPath('data.translate_to', null)
             ->assertJsonPath('data.translation_engine', null);
+    });
+
+    it('translates with Enhanced (Azure) when chosen and configured', function () {
+        config(['translation.azure.key' => 'test-key', 'translation.azure.region' => 'southeastasia']);
+
+        $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt', 'translate_to' => 'ja', 'translation_engine' => 'azure'])
+            ->assertCreated()
+            ->assertJsonPath('data.translation_engine', 'azure')
+            ->assertJsonPath('data.translated_with', null);
+    });
+
+    it('refuses Enhanced when Azure is not configured', function () {
+        config(['translation.azure.key' => null]);
+
+        $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt', 'translate_to' => 'ja', 'translation_engine' => 'azure'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['translation_engine']);
     });
 
     it('rejects a language it cannot translate into', function (string $language) {

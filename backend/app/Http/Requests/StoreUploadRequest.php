@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Services\Translation\TranslationEngines;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -31,6 +32,7 @@ class StoreUploadRequest extends FormRequest
             'last_modified' => ['nullable', 'integer', 'min:0'],
             'language' => ['nullable', 'string', 'max:10'],
             'translate_to' => ['nullable', Rule::in(config('translation.targets'))],
+            'translation_engine' => ['nullable', Rule::in(app(TranslationEngines::class)->available())],
             'subtitle_format' => ['required', Rule::in(['srt', 'vtt', 'both'])],
             'email_when_ready' => ['sometimes', 'boolean'],
         ];

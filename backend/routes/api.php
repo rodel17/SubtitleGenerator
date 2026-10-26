@@ -7,6 +7,7 @@ use App\Http\Controllers\UploadCompletionController;
 use App\Http\Controllers\UploadController;
 use App\Http\Controllers\UploadEmailController;
 use App\Http\Resources\UserResource;
+use App\Services\Translation\TranslationEngines;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -19,6 +20,9 @@ Route::middleware('auth:sanctum')->group(function () {
         return UserResource::make($request->user());
     });
     Route::post('/logout', LogoutController::class)->name('logout');
+    // Which translation engines the upload form can offer ("azure" only when configured)
+    Route::get('/translation-engines', fn (TranslationEngines $engines) => ['data' => $engines->available()])
+        ->name('translation-engines.index');
 
     Route::apiResource('uploads', UploadController::class)
         ->except(['update'])

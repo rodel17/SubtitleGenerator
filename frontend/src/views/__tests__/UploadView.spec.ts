@@ -54,6 +54,7 @@ function resource(overrides: Partial<UploadResource> = {}): UploadResource {
     email_error: null,
     translate_to: null,
     translation_engine: null,
+    translated_with: null,
     ...overrides,
   }
 }
@@ -118,7 +119,7 @@ describe('in progress list', () => {
 
     await mountView()
 
-    expect(get).not.toHaveBeenCalled()
+    expect(get).not.toHaveBeenCalledWith('/uploads')
   })
 
   it('shows a loading message, then the empty state', async () => {
@@ -281,6 +282,41 @@ describe('generating subtitles', () => {
     await flushPromises()
 
     expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translateTo: 'fil' }))
+  })
+
+  it('offers Standard or Enhanced translation when the server has Azure', async () => {
+    get.mockImplementation(async (url: string) =>
+      url === '/translation-engines' ? { data: { data: ['local', 'azure'] } } : { data: { data: [] } },
+    )
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('clip.mp4')])
+    await wrapper.get('select#translate-to').setValue('ja')
+
+    const standard = wrapper.get<HTMLInputElement>('input[type="radio"][value="local"]')
+    expect(standard.element.checked).toBe(true)
+    await wrapper.get('input[type="radio"][value="azure"]').setValue(true)
+    expect(wrapper.get('[data-test="translation-note"]').text()).toBe(
+      "The transcript text is sent to Microsoft Azure for translation. Microsoft doesn't store it or use it for training.",
+    )
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(upload).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ translateTo: 'ja', translationEngine: 'azure' }),
+    )
+  })
+
+  it('offers no engine choice when only Standard exists', async () => {
+    const wrapper = await mountView()
+    await choose(wrapper, [fileOf('clip.mp4')])
+    await wrapper.get('select#translate-to').setValue('ja')
+
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(upload).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ translationEngine: 'local' }))
   })
 
   it("doesn't translate unless a language is chosen", async () => {

@@ -48,6 +48,16 @@ describe('SubtitlesReadyDialog', () => {
     expect(button(wrapper, 'Download Filipino SRT + VTT (.zip)')?.exists()).toBe(true)
   })
 
+  it('says when Standard translated because Enhanced was unavailable', () => {
+    const fellBack = mountDialog({ translateTo: 'fil', translationEngine: 'azure', translatedWith: 'local' })
+    const asChosen = mountDialog({ translateTo: 'fil', translationEngine: 'azure', translatedWith: 'azure' })
+
+    expect(fellBack.get('[data-test="fell-back"]').text()).toBe(
+      'Translated with Standard (on our own server): Enhanced was unavailable.',
+    )
+    expect(asChosen.find('[data-test="fell-back"]').exists()).toBe(false)
+  })
+
   it('says when the subtitles are deleted if they are not downloaded', () => {
     const expiresAt = '2026-10-25T18:30:00.000000Z'
     const wrapper = mountDialog({ expiresAt })

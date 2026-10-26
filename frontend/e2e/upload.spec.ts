@@ -322,6 +322,7 @@ test.describe('uploading', () => {
         subtitle_format: 'vtt',
         email_when_ready: false,
         translate_to: null,
+        translation_engine: null,
       },
     ])
     expect(api.chunkIndexes.toSorted()).toEqual([0, 1])
@@ -343,6 +344,33 @@ test.describe('uploading', () => {
     await readyDialog(page).getByRole('button', { name: 'Download Filipino SRT' }).click()
     expect((await download).suggestedFilename()).toBe('interview.fil.srt')
     expect(api.startRequests[0]).toMatchObject({ translate_to: 'fil' })
+  })
+
+  test('translates with Enhanced (Azure) when chosen, and says so when it fell back to Standard', async ({ page }) => {
+    api.translationEngines = ['local', 'azure']
+    api.azureUnavailable = true
+    await page.goto('/')
+    await chooseWav(page, 'interview.wav')
+    await page.getByLabel('Translate to').selectOption('ja')
+    await page.getByLabel('Enhanced: better quality, by Microsoft Azure').check()
+    await expect(page.getByText('The transcript text is sent to Microsoft Azure for translation.')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+
+    await expect(readyDialog(page)).toContainText(
+      'Translated with Standard (on our own server): Enhanced was unavailable.',
+      { timeout: 10_000 },
+    )
+    expect(api.startRequests[0]).toMatchObject({ translate_to: 'ja', translation_engine: 'azure' })
+  })
+
+  test('offers no Enhanced option when the server has no Azure', async ({ page }) => {
+    await page.goto('/')
+    await chooseWav(page, 'interview.wav')
+    await page.getByLabel('Translate to').selectOption('ja')
+
+    await expect(page.getByText('Translated on our own server; the text never leaves it.')).toBeVisible()
+    await expect(page.getByRole('radio')).toHaveCount(0)
   })
 
   test('emails the subtitles without asking when that was chosen before uploading', async ({ page }) => {

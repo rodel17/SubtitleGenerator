@@ -27,6 +27,14 @@ class TranscriptTranslator
     public function __construct(private Translator $translator) {}
 
     /**
+     * The same, translating with another engine.
+     */
+    public function using(Translator $translator): static
+    {
+        return new static($translator);
+    }
+
+    /**
      * Whether the transcript is in another language than $to (or its language is unknown).
      *
      * @param  array{language?: string|null}  $transcript
