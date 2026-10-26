@@ -34,18 +34,16 @@ class SubtitleDownloadController extends Controller
             abort_unless($disk->exists($upload->subtitlePath($format)), 404);
         }
 
-        $name = pathinfo($upload->original_name, PATHINFO_FILENAME);
-
         if (count($formats) === 1) {
             return $disk->download(
                 $upload->subtitlePath($formats[0]),
-                "{$name}.{$formats[0]}",
+                $upload->subtitleFileName($formats[0]),
                 ['Content-Type' => self::CONTENT_TYPES[$formats[0]]],
             );
         }
 
         return response()
-            ->download($this->zip($upload, $disk, $formats, $name), "{$name}.zip", ['Content-Type' => 'application/zip'])
+            ->download($this->zip($upload, $disk, $formats), $upload->subtitleFileName('zip'), ['Content-Type' => 'application/zip'])
             ->deleteFileAfterSend();
     }
 
@@ -54,7 +52,7 @@ class SubtitleDownloadController extends Controller
      *
      * @param  list<string>  $formats
      */
-    private function zip(Upload $upload, Filesystem $disk, array $formats, string $name): string
+    private function zip(Upload $upload, Filesystem $disk, array $formats): string
     {
         $path = tempnam(sys_get_temp_dir(), 'subtitles');
         $zip = new ZipArchive;
@@ -64,7 +62,7 @@ class SubtitleDownloadController extends Controller
         }
 
         foreach ($formats as $format) {
-            $zip->addFromString("{$name}.{$format}", $disk->get($upload->subtitlePath($format)));
+            $zip->addFromString($upload->subtitleFileName($format), $disk->get($upload->subtitlePath($format)));
         }
 
         $zip->close();

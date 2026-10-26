@@ -11,9 +11,12 @@ export interface FakeUpload {
   total_chunks: number
   language: string | null
   subtitle_format: 'srt' | 'vtt' | 'both'
+  email_when_ready: boolean
   status: 'uploading' | 'assembling' | 'uploaded' | 'transcribing' | 'ready' | 'failed'
   progress: number | null
   error: string | null
+  email_status: 'sending' | 'failed' | null
+  email_error: string | null
   download_url?: string
   created_at: string
   completed_at: string | null
@@ -34,9 +37,12 @@ export function fakeUpload(overrides: Partial<FakeUpload> = {}): FakeUpload {
     total_chunks: 1,
     language: 'en',
     subtitle_format: 'srt',
+    email_when_ready: false,
     status: 'ready',
     progress: null,
     error: null,
+    email_status: null,
+    email_error: null,
     created_at: '2026-10-20T12:00:00.000000Z',
     completed_at: '2026-10-20T12:01:00.000000Z',
     expires_at: null,
@@ -64,6 +70,8 @@ export class FakeApi {
   receivedChunks: Record<string, number[]> = {}
   completions: string[] = []
   deletions: string[] = []
+  /** Uploads whose subtitles the fake server "emailed" (and then deleted, like the real one) */
+  emails: string[] = []
 
   /** Chunk size the fake server hands out, small so tests need several chunks */
   chunkSize = 4096
@@ -73,6 +81,7 @@ export class FakeApi {
   onChunk?: Handler
   onComplete?: Handler
   onSubtitle?: Handler
+  onEmail?: Handler
 
   constructor(private readonly page: Page) {}
 
@@ -100,6 +109,7 @@ export class FakeApi {
         last_modified: number | null
         language: string
         subtitle_format: FakeUpload['subtitle_format']
+        email_when_ready: boolean
       }
       this.startRequests.push(body)
       if (this.onStart) return this.onStart(route, request)
@@ -115,6 +125,7 @@ export class FakeApi {
         total_chunks: Math.ceil(body.size / this.chunkSize),
         language: body.language,
         subtitle_format: body.subtitle_format,
+        email_when_ready: body.email_when_ready,
         status: 'uploading',
         completed_at: null,
       })
@@ -164,10 +175,24 @@ export class FakeApi {
       return route.fulfill({ status: 200, contentType: 'application/octet-stream', body })
     }
 
+    const email = path.match(/^\/uploads\/([^/]+)\/email$/)
+    if (method === 'POST' && email) {
+      if (this.onEmail) return this.onEmail(route, request)
+      const upload = this.uploads.find((candidate) => candidate.id === email[1])!
+      Object.assign(upload, { email_status: 'sending', email_error: null })
+      return this.json(route, 202, { data: upload })
+    }
+
     const single = path.match(/^\/uploads\/([^/]+)$/)
     if (method === 'GET' && single) {
       const upload = this.uploads.find((candidate) => candidate.id === single[1])
       if (!upload) return route.fulfill({ status: 404 })
+      if (upload.status === 'ready' && upload.email_status === 'sending') {
+        // "Sent": like the real server, the upload is deleted once its email is out
+        this.emails.push(upload.id)
+        this.uploads = this.uploads.filter((candidate) => candidate !== upload)
+        return route.fulfill({ status: 404 })
+      }
       this.advance(upload)
       return this.json(route, 200, { data: upload })
     }
@@ -191,6 +216,7 @@ export class FakeApi {
         progress: null,
         download_url: downloadUrl(upload.id),
         expires_at: '2026-10-20T18:05:00.000000Z',
+        email_status: upload.email_when_ready ? 'sending' : null,
       })
     }
   }

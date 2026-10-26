@@ -30,9 +30,12 @@ class UploadResource extends JsonResource
             'total_chunks' => $this->total_chunks,
             'language' => $this->language,
             'subtitle_format' => $this->subtitle_format,
+            'email_when_ready' => $this->email_when_ready,
             'status' => $this->status,
             'progress' => $this->progress(),
             'error' => $this->error,
+            'email_status' => $this->email_status,
+            'email_error' => $this->email_error,
             'download_url' => $this->when(
                 $this->status === UploadStatus::Ready,
                 fn (): string => route('uploads.subtitles.show', $this->id),

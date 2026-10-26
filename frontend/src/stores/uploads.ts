@@ -7,6 +7,7 @@ import { saveBlob } from '@/lib/download'
 import { formatBytes } from '@/lib/format'
 import { localId } from '@/lib/id'
 import {
+  isEmailing,
   mediaKindOf,
   SERVER_PROCESSING_STATUSES,
   subtitleFileName,
@@ -52,6 +53,9 @@ function fromResource(resource: UploadResource): UploadItem {
     format: resource.subtitle_format,
     downloadUrl: resource.download_url,
     expiresAt: resource.expires_at ?? undefined,
+    emailWhenReady: resource.email_when_ready,
+    emailStatus: resource.email_status ?? undefined,
+    emailError: resource.email_error ?? undefined,
   }
 }
 
@@ -62,12 +66,23 @@ function applyResource(item: UploadItem, resource: UploadResource) {
   item.error = errorFor(resource)
   item.downloadUrl = resource.download_url
   item.expiresAt = resource.expires_at ?? undefined
+  item.emailWhenReady = resource.email_when_ready
+  item.emailStatus = resource.email_status ?? undefined
+  item.emailError = resource.email_error ?? undefined
+}
+
+/** An emailed upload that the server has since deleted, to tell the user it arrived */
+export interface EmailedUpload {
+  id: string
+  name: string
 }
 
 export const useUploadsStore = defineStore('uploads', () => {
   const items = ref<UploadItem[]>([])
   const isLoading = ref(false)
   const loadError = ref<string | null>(null)
+  /** Subtitles the server has emailed (and then deleted), until the user dismisses the notice */
+  const emailed = ref<EmailedUpload[]>([])
 
   // Not reactive: File objects and controllers only matter to the upload loop.
   // An interrupted upload keeps its File here so it can resume without re-picking it.
@@ -82,12 +97,12 @@ export const useUploadsStore = defineStore('uploads', () => {
   )
 
   /**
-   * Ready subtitles wait for the user to download them, the one that finished first
-   * (earliest deletion time) first; ties keep list order.
+   * Ready subtitles wait for the user to download or email them, the one that finished
+   * first (earliest deletion time) first; ties keep list order. Ones being emailed don't.
    */
   const nextReady = computed(() =>
     items.value
-      .filter((item) => item.status === 'ready')
+      .filter((item) => item.status === 'ready' && !isEmailing(item))
       .reduce<UploadItem | undefined>(
         (first, item) => (!first || (item.expiresAt ?? '~') < (first.expiresAt ?? '~') ? item : first),
         undefined,
@@ -111,7 +126,7 @@ export const useUploadsStore = defineStore('uploads', () => {
     }
   }
 
-  function enqueue(files: File[], language: string, format: SubtitleFormat) {
+  function enqueue(files: File[], language: string, format: SubtitleFormat, emailWhenReady = false) {
     const queued = files.map((file) => {
       const id = localId()
       pendingFiles.set(id, file)
@@ -125,6 +140,7 @@ export const useUploadsStore = defineStore('uploads', () => {
         status: 'queued' as const,
         language,
         format,
+        emailWhenReady,
       }
     })
 
@@ -218,6 +234,7 @@ export const useUploadsStore = defineStore('uploads', () => {
             ...callbacks,
             language: item.language ?? 'auto',
             format: item.format ?? 'srt',
+            emailWhenReady: item.emailWhenReady ?? false,
             onStarted: (resource) => (item.serverId = resource.id),
           })
       applyResource(item, accepted)
@@ -253,7 +270,7 @@ export const useUploadsStore = defineStore('uploads', () => {
   }
 
   function isServerProcessing(item: UploadItem): boolean {
-    return item.serverId !== undefined && SERVER_PROCESSING_STATUSES.includes(item.status)
+    return item.serverId !== undefined && (SERVER_PROCESSING_STATUSES.includes(item.status) || isEmailing(item))
   }
 
   async function refreshProcessing() {
@@ -264,6 +281,12 @@ export const useUploadsStore = defineStore('uploads', () => {
           applyResource(item, data.data)
         } catch (error) {
           if (isAxiosError(error) && error.response?.status === 404) {
+            if (isEmailing(item)) {
+              // Sent: the server deletes an upload once its email is out
+              emailed.value.push({ id: item.id, name: item.name })
+              items.value = items.value.filter((candidate) => candidate.id !== item.id)
+              return
+            }
             item.status = 'failed'
             item.error = 'This upload no longer exists.'
           }
@@ -308,6 +331,33 @@ export const useUploadsStore = defineStore('uploads', () => {
   }
 
   /**
+   * Ask the server to email the subtitles to the signed-in user. The row then shows
+   * "Emailing" until the server has sent them and deleted the upload (polling sees 404).
+   */
+  async function email(id: string) {
+    const item = items.value.find((candidate) => candidate.id === id)
+    if (!item?.serverId || item.status !== 'ready' || item.emailRequesting || isEmailing(item)) return
+
+    item.emailRequesting = true
+    item.emailError = undefined
+    item.downloadError = undefined
+
+    try {
+      const { data } = await api.post<{ data: UploadResource }>(`/uploads/${item.serverId}/email`)
+      applyResource(item, data.data)
+      startPolling()
+    } catch (error) {
+      item.emailError = errorMessage(error, "We couldn't email your subtitles. Please try again.")
+    } finally {
+      item.emailRequesting = false
+    }
+  }
+
+  function dismissEmailed(id: string) {
+    emailed.value = emailed.value.filter((notice) => notice.id !== id)
+  }
+
+  /**
    * Cancel an in-flight upload (if any) and delete it everywhere. Resolves once
    * the server has deleted it; rejects with a readable message when it could not,
    * leaving the row in place so the user can try again.
@@ -343,6 +393,7 @@ export const useUploadsStore = defineStore('uploads', () => {
     items,
     isLoading,
     loadError,
+    emailed,
     hasActiveUploads,
     nextReady,
     fetchRecent,
@@ -351,6 +402,8 @@ export const useUploadsStore = defineStore('uploads', () => {
     hasFileFor,
     resume,
     download,
+    email,
+    dismissEmailed,
     remove,
   }
 })

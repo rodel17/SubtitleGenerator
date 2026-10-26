@@ -69,8 +69,8 @@ describe('show', function () {
         $response->assertOk()
             ->assertExactJsonStructure(['data' => [
                 'id', 'name', 'extension', 'mime_type', 'last_modified', 'size', 'chunk_size', 'total_chunks',
-                'language', 'subtitle_format', 'status', 'progress', 'error', 'created_at', 'completed_at',
-                'expires_at',
+                'language', 'subtitle_format', 'email_when_ready', 'status', 'progress', 'error', 'email_status',
+                'email_error', 'created_at', 'completed_at', 'expires_at',
             ]])
             ->assertJsonPath('data.name', 'Interview.mp4')
             ->assertJsonPath('data.size', 45)
@@ -222,6 +222,29 @@ describe('store', function () {
         ]);
 
         $response->assertCreated()->assertJsonPath('data.last_modified', 1792500000123);
+    });
+
+    it('remembers whether to email the subtitles once they are ready', function (?bool $emailWhenReady, bool $expected) {
+        $response = $this->postJson('/api/uploads', array_filter([
+            'name' => 'clip.mp4',
+            'size' => 45,
+            'subtitle_format' => 'srt',
+            'email_when_ready' => $emailWhenReady,
+        ], fn ($value) => $value !== null));
+
+        $response->assertCreated()
+            ->assertJsonPath('data.email_when_ready', $expected)
+            ->assertJsonPath('data.email_status', null);
+    })->with([
+        'chosen' => [true, true],
+        'declined' => [false, false],
+        'not sent' => [null, false],
+    ]);
+
+    it('rejects an email choice that is not a boolean', function () {
+        $this->postJson('/api/uploads', ['name' => 'clip.mp4', 'size' => 45, 'subtitle_format' => 'srt', 'email_when_ready' => 'please'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['email_when_ready']);
     });
 
     it('rejects an invalid modification time', function (mixed $lastModified) {

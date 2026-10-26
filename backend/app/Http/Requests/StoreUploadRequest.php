@@ -31,6 +31,7 @@ class StoreUploadRequest extends FormRequest
             'last_modified' => ['nullable', 'integer', 'min:0'],
             'language' => ['nullable', 'string', 'max:10'],
             'subtitle_format' => ['required', Rule::in(['srt', 'vtt', 'both'])],
+            'email_when_ready' => ['sometimes', 'boolean'],
         ];
     }
 

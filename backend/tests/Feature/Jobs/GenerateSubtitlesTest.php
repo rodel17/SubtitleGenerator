@@ -1,8 +1,11 @@
 <?php
 
+use App\Enums\EmailStatus;
 use App\Enums\UploadStatus;
 use App\Jobs\GenerateSubtitles;
+use App\Jobs\SendSubtitlesEmail;
 use App\Models\Upload;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 
 beforeEach(function () {
@@ -72,6 +75,30 @@ it('starts the clock for deleting the subtitles if nobody downloads them', funct
     GenerateSubtitles::dispatch($upload);
 
     expect($upload->fresh()->finished_at->toDateTimeString())->toBe(now()->toDateTimeString());
+});
+
+it('emails the subtitles straight away when that was chosen before uploading', function () {
+    Queue::fake([SendSubtitlesEmail::class]);
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing, 'email_when_ready' => true]);
+    putTranscript($upload);
+
+    GenerateSubtitles::dispatch($upload);
+
+    $upload->refresh();
+    expect($upload->status)->toBe(UploadStatus::Ready);
+    expect($upload->email_status)->toBe(EmailStatus::Sending);
+    Queue::assertPushed(SendSubtitlesEmail::class, fn (SendSubtitlesEmail $job) => $job->upload->is($upload));
+});
+
+it('waits for the user to download or email it otherwise', function () {
+    Queue::fake([SendSubtitlesEmail::class]);
+    $upload = Upload::factory()->uploaded()->create(['status' => UploadStatus::Transcribing]);
+    putTranscript($upload);
+
+    GenerateSubtitles::dispatch($upload);
+
+    expect($upload->fresh()->email_status)->toBeNull();
+    Queue::assertNotPushed(SendSubtitlesEmail::class);
 });
 
 it('marks the upload failed and deletes its files when the transcript is missing', function () {

@@ -46,6 +46,27 @@ export interface UploadItem {
   downloading?: boolean
   /** Why the last download did not work; the subtitles are still there to try again */
   downloadError?: string
+  /** Chosen before uploading: the server emails the subtitles as soon as they're ready */
+  emailWhenReady?: boolean
+  /** The server is emailing the subtitles, or could not */
+  emailStatus?: EmailStatus
+  /** Why emailing did not work; the subtitles can still be downloaded */
+  emailError?: string
+  /** "Email to me" was clicked and the server hasn't answered yet */
+  emailRequesting?: boolean
+}
+
+export type EmailStatus = 'sending' | 'failed'
+
+/**
+ * Ready subtitles on their way to the user's inbox. These aren't offered for
+ * download; the server deletes the upload once the email is sent.
+ */
+export function isEmailing(item: UploadItem): boolean {
+  return (
+    item.status === 'ready' &&
+    (item.emailStatus === 'sending' || (item.emailWhenReady === true && item.emailStatus === undefined))
+  )
 }
 
 /**
@@ -78,10 +99,13 @@ export interface UploadResource {
   total_chunks: number
   language: string | null
   subtitle_format: SubtitleFormat
+  email_when_ready: boolean
   status: ServerUploadStatus
   /** 0–100 while the server is assembling or transcribing, otherwise null */
   progress: number | null
   error: string | null
+  email_status: EmailStatus | null
+  email_error: string | null
   /** Subtitle download (one file, or a zip for both formats), only once the upload is ready */
   download_url?: string
   created_at: string

@@ -46,8 +46,34 @@ describe('SubtitlesReadyDialog', () => {
     const wrapper = mountDialog({ expiresAt })
 
     expect(wrapper.text().replace(/\s+/g, ' ')).toContain(
-      `They're deleted from our servers as soon as you download them, or at ${formatTime(expiresAt)} if you don't.`,
+      `They're deleted from our servers as soon as you download or email them, or at ${formatTime(expiresAt)} if you don't.`,
     )
+  })
+
+  it("offers to email them to the user's own address", async () => {
+    const wrapper = mountDialog({}, { email: 'ada@example.com' })
+
+    expect(wrapper.text()).toContain('Sends to ada@example.com')
+    await button(wrapper, 'Email to me')!.trigger('click')
+
+    expect(wrapper.emitted('email')).toEqual([['item-1']])
+  })
+
+  it('shows a spinner and blocks every action while the email is being requested', () => {
+    const wrapper = mountDialog({ emailRequesting: true })
+
+    const email = button(wrapper, 'Sending…')!
+    expect(email.attributes('disabled')).toBeDefined()
+    expect(email.attributes('aria-busy')).toBe('true')
+    expect(email.find('[data-test="spinner"]').exists()).toBe(true)
+    expect(button(wrapper, 'Download SRT')!.attributes('disabled')).toBeDefined()
+    expect(button(wrapper, 'Discard without saving')!.attributes('disabled')).toBeDefined()
+  })
+
+  it('shows why the email could not be sent', () => {
+    const wrapper = mountDialog({ emailError: "Email isn't available right now. Please download your subtitles instead." })
+
+    expect(wrapper.get('[role="alert"]').text()).toBe("Email isn't available right now. Please download your subtitles instead.")
   })
 
   it('emits download with the item id', async () => {
@@ -58,13 +84,14 @@ describe('SubtitlesReadyDialog', () => {
     expect(wrapper.emitted('download')).toEqual([['item-1']])
   })
 
-  it('shows a spinner and blocks both actions while downloading', () => {
+  it('shows a spinner and blocks every action while downloading', () => {
     const wrapper = mountDialog({ downloading: true })
 
     const download = button(wrapper, 'Downloading…')!
     expect(download.attributes('disabled')).toBeDefined()
     expect(download.attributes('aria-busy')).toBe('true')
     expect(download.find('[data-test="spinner"]').exists()).toBe(true)
+    expect(button(wrapper, 'Email to me')!.attributes('disabled')).toBeDefined()
     expect(button(wrapper, 'Discard without saving')!.attributes('disabled')).toBeDefined()
   })
 
