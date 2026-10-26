@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { formatBytes } from '@/lib/format'
-import { ACCEPTED_EXTENSIONS, MAX_FILE_SIZE } from '@/types/upload'
+import { ACCEPTED_EXTENSIONS, MAX_FILE_SIZE, MAX_VIDEO_SIZE } from '@/types/upload'
 
 const emit = defineEmits<{
   add: [files: File[]]
@@ -69,7 +69,7 @@ function onChange() {
     </span>
 
     <span class="text-[13px] text-slate-600">
-      {{ acceptLabel }} · up to {{ formatBytes(MAX_FILE_SIZE) }}
+      {{ acceptLabel }} · videos up to {{ formatBytes(MAX_VIDEO_SIZE) }}, audio up to {{ formatBytes(MAX_FILE_SIZE) }}
     </span>
 
     <input

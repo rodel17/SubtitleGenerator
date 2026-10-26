@@ -4,6 +4,7 @@ import { AxiosError, AxiosHeaders, type AxiosInstance, type AxiosResponse } from
 
 import { api } from '@/lib/api'
 import { saveBlob } from '@/lib/download'
+import { extractAudio, NoAudioTrackError } from '@/lib/extractAudio'
 import { resumeInChunks, uploadInChunks, type ChunkedUploadOptions } from '@/services/chunkedUpload'
 import type { UploadResource } from '@/types/upload'
 import { POLL_INTERVAL_MS, useUploadsStore } from '../uploads'
@@ -17,6 +18,12 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   },
 }))
 vi.mock('@/lib/download', () => ({ saveBlob: vi.fn<typeof saveBlob>() }))
+vi.mock('@/lib/extractAudio', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/extractAudio')>()),
+  // FFmpeg can't run here: by default "extracting" hands back the same file (see the audio tests for the rest)
+  extractAudio: vi.fn<typeof extractAudio>(async (file: File) => file),
+}))
+
 vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/chunkedUpload')>()),
   uploadInChunks: vi.fn<typeof uploadInChunks>(),
@@ -29,6 +36,7 @@ const post = vi.mocked(api.post)
 const upload = vi.mocked(uploadInChunks)
 const resumeUpload = vi.mocked(resumeInChunks)
 const save = vi.mocked(saveBlob)
+const extract = vi.mocked(extractAudio)
 
 function resource(overrides: Partial<UploadResource> = {}): UploadResource {
   return {
@@ -84,6 +92,7 @@ beforeEach(() => {
   upload.mockReset()
   resumeUpload.mockReset()
   save.mockReset()
+  extract.mockReset().mockImplementation(async (file: File) => file)
 })
 
 afterEach(() => {
@@ -131,6 +140,7 @@ describe('fetchRecent', () => {
         translateTo: undefined,
         translationEngine: undefined,
         translatedWith: undefined,
+        audioOnly: false,
       },
     ])
   })
@@ -1146,5 +1156,273 @@ describe('translation engines', () => {
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
 
     expect(store.items[0]).toMatchObject({ translationEngine: 'azure', translatedWith: 'local' })
+  })
+})
+
+describe('audio from videos', () => {
+  /** The audio track the (mocked) browser extraction copies out of a video */
+  function audioOf(name = 'clip.mka', bytes = 4): File {
+    return new File(['a'.repeat(bytes)], name, { type: 'audio/x-matroska', lastModified: 1_700_000_000_000 })
+  }
+
+  /** A file of `bytes` without allocating them */
+  function sized(name: string, bytes: number): File {
+    const selected = file(name)
+    Object.defineProperty(selected, 'size', { value: bytes })
+    return selected
+  }
+
+  const outOfMemory = () => new Error('RuntimeError: Aborted(OOM)')
+
+  it('uploads only the audio of a video, named after the video', async () => {
+    const audio = audioOf()
+    extract.mockResolvedValue(audio)
+    upload.mockResolvedValue(resource({ extension: 'mka' }))
+    const store = useUploadsStore()
+    const video = file('clip.mp4')
+
+    store.enqueue([video], 'en', 'srt')
+    await tick()
+
+    expect(extract).toHaveBeenCalledWith(video, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(upload).toHaveBeenCalledWith(audio, expect.objectContaining({ displayName: 'clip.mp4' }))
+    expect(store.items[0]!.audioOnly).toBe(true)
+  })
+
+  it('uploads audio files as they are', async () => {
+    upload.mockResolvedValue(resource({ name: 'talk.mp3', extension: 'mp3' }))
+    const store = useUploadsStore()
+    const selected = file('talk.mp3')
+
+    store.enqueue([selected], 'en', 'srt')
+    await tick()
+
+    expect(extract).not.toHaveBeenCalled()
+    expect(upload).toHaveBeenCalledWith(selected, expect.objectContaining({ displayName: undefined }))
+  })
+
+  it('shows the progress of preparing the audio, and keeps the page busy meanwhile', async () => {
+    const hold = deferred<File>()
+    let onProgress!: (percent: number) => void
+    extract.mockImplementation((_video, options) => {
+      onProgress = options!.onProgress!
+      return hold.promise
+    })
+    upload.mockResolvedValue(resource())
+    const store = useUploadsStore()
+
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+
+    expect(store.items[0]).toMatchObject({ status: 'preparing', progress: 0 })
+    expect(store.hasActiveUploads).toBe(true)
+    onProgress(37)
+    expect(store.items[0]!.progress).toBe(37)
+
+    hold.resolve(audioOf())
+    await tick()
+    expect(store.items[0]!.status).toBe('ready')
+  })
+
+  it('fails without uploading when the video has no audio', async () => {
+    extract.mockRejectedValue(new NoAudioTrackError())
+    const store = useUploadsStore()
+
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+
+    expect(store.items[0]).toMatchObject({
+      status: 'failed',
+      error: 'This video has no audio track, so there is nothing to transcribe.',
+    })
+    expect(upload).not.toHaveBeenCalled()
+    expect(store.hasFileFor(store.items[0]!.id)).toBe(false)
+  })
+
+  it('fails when even the audio is over the size limit', async () => {
+    extract.mockResolvedValue(sized('long.mka', 500 * 1024 ** 2 + 1))
+    const store = useUploadsStore()
+
+    store.enqueue([file('long.mp4')], 'en', 'srt')
+    await tick()
+
+    expect(store.items[0]).toMatchObject({
+      status: 'failed',
+      error: 'The audio of this video is larger than the 500 MB limit.',
+    })
+    expect(upload).not.toHaveBeenCalled()
+  })
+
+  describe('when the audio cannot be prepared on this device', () => {
+    it('asks before uploading a video of up to 500 MB whole', async () => {
+      extract.mockRejectedValue(outOfMemory())
+      const store = useUploadsStore()
+
+      store.enqueue([file()], 'en', 'srt')
+      await tick()
+
+      const item = store.items[0]!
+      expect(item.status).toBe('confirm_full_upload')
+      expect(store.nextFullUploadConfirmation).toStrictEqual(item)
+      expect(store.hasActiveUploads).toBe(true)
+      expect(upload).not.toHaveBeenCalled()
+    })
+
+    it('uploads the whole video once the user agrees, without trying to prepare it again', async () => {
+      extract.mockRejectedValue(outOfMemory())
+      upload.mockResolvedValue(resource())
+      const store = useUploadsStore()
+      const video = file()
+      store.enqueue([video], 'en', 'srt')
+      await tick()
+
+      store.confirmFullUpload(store.items[0]!.id)
+      await tick()
+
+      expect(extract).toHaveBeenCalledTimes(1)
+      expect(upload).toHaveBeenCalledWith(video, expect.objectContaining({ displayName: undefined }))
+      expect(store.items[0]!.status).toBe('ready')
+      expect(store.items[0]!.audioOnly).toBeFalsy()
+      expect(store.nextFullUploadConfirmation).toBeUndefined()
+    })
+
+    it('drops the video when the user declines, without asking the server', async () => {
+      extract.mockRejectedValue(outOfMemory())
+      const store = useUploadsStore()
+      store.enqueue([file()], 'en', 'srt')
+      await tick()
+
+      await store.remove(store.items[0]!.id)
+
+      expect(store.items).toEqual([])
+      expect(destroy).not.toHaveBeenCalled()
+      expect(upload).not.toHaveBeenCalled()
+    })
+
+    it('goes on with the next file while waiting for the answer', async () => {
+      extract.mockRejectedValueOnce(outOfMemory())
+      upload.mockResolvedValue(resource())
+      const store = useUploadsStore()
+
+      store.enqueue([file('a.mp4'), file('b.mp4')], 'en', 'srt')
+      await tick()
+
+      expect(store.items.map((item) => item.status)).toEqual(['confirm_full_upload', 'ready'])
+    })
+
+    it('says so instead of asking when the video is over 500 MB', async () => {
+      extract.mockRejectedValue(outOfMemory())
+      const store = useUploadsStore()
+
+      store.enqueue([sized('big.mp4', 500 * 1024 ** 2 + 1)], 'en', 'srt')
+      await tick()
+
+      expect(store.items[0]).toMatchObject({
+        status: 'failed',
+        error: "This browser can't prepare large videos. Use Chrome, Edge or Firefox on a computer, or choose a file under 500 MB.",
+      })
+      expect(upload).not.toHaveBeenCalled()
+    })
+  })
+
+  it('stops preparing the audio when the upload is cancelled', async () => {
+    let signal!: AbortSignal
+    extract.mockImplementation((_video, options) => {
+      signal = options!.signal!
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('Audio extraction was cancelled.', 'AbortError')))
+      })
+    })
+    const store = useUploadsStore()
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+
+    await store.remove(store.items[0]!.id)
+    await tick()
+
+    expect(signal.aborted).toBe(true)
+    expect(store.items).toEqual([])
+    expect(upload).not.toHaveBeenCalled()
+    expect(destroy).not.toHaveBeenCalled()
+  })
+
+  it('resumes an interrupted upload with the audio already prepared', async () => {
+    const audio = audioOf()
+    extract.mockResolvedValue(audio)
+    upload.mockImplementationOnce(async (_file, options) => {
+      options.onStarted?.(resource({ id: 'server-4', status: 'uploading', extension: 'mka' }))
+      throw networkError()
+    })
+    resumeUpload.mockResolvedValue(resource({ id: 'server-4' }))
+    const store = useUploadsStore()
+    store.enqueue([file()], 'en', 'srt')
+    await tick()
+
+    expect(store.resume(store.items[0]!.id)).toBeUndefined()
+    await tick()
+
+    expect(extract).toHaveBeenCalledTimes(1)
+    expect(resumeUpload).toHaveBeenCalledWith(audio, 'server-4', expect.anything())
+  })
+
+  describe('resuming after a page reload', () => {
+    /** The server has 4 bytes of the audio of clip.mp4 */
+    async function reloadedAudioUpload() {
+      get.mockResolvedValue({
+        data: {
+          data: [
+            resource({
+              id: 'server-6',
+              status: 'uploading',
+              name: 'clip.mp4',
+              extension: 'mka',
+              size: 4,
+              last_modified: 1_700_000_000_000,
+            }),
+          ],
+        },
+      })
+      const store = useUploadsStore()
+      await store.fetchRecent()
+      return store
+    }
+
+    it('prepares the audio of the picked video again and resumes with it', async () => {
+      const store = await reloadedAudioUpload()
+      const audio = audioOf('clip.mka', 4)
+      extract.mockResolvedValue(audio)
+      resumeUpload.mockResolvedValue(resource({ id: 'server-6' }))
+      const video = file('clip.mp4', 10, 1_700_000_000_000)
+
+      expect(store.items[0]!.audioOnly).toBe(true)
+      expect(store.resume('server-6', video)).toBeUndefined()
+      await tick()
+
+      expect(extract).toHaveBeenCalledWith(video, expect.anything())
+      expect(resumeUpload).toHaveBeenCalledWith(audio, 'server-6', expect.anything())
+    })
+
+    it('refuses a video with another name', async () => {
+      const store = await reloadedAudioUpload()
+
+      const error = store.resume('server-6', file('other.mp4', 10, 1_700_000_000_000))
+
+      expect(error).toBe('That is a different file. Choose "clip.mp4" to resume.')
+      expect(extract).not.toHaveBeenCalled()
+    })
+
+    it('fails when the audio prepared again is not what the server has', async () => {
+      const store = await reloadedAudioUpload()
+      extract.mockResolvedValue(audioOf('clip.mka', 5))
+
+      store.resume('server-6', file('clip.mp4', 10, 1_700_000_000_000))
+      await tick()
+
+      expect(store.items[0]).toMatchObject({
+        status: 'failed',
+        error: "This video doesn't match the interrupted upload. Remove it and add the video again.",
+      })
+      expect(resumeUpload).not.toHaveBeenCalled()
+    })
   })
 })

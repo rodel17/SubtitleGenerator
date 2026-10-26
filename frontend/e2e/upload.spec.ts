@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 import { test, expect, type Page } from '@playwright/test'
 
 import { FakeApi, chunkIndexOf, fakeUpload, wavBuffer } from './support/fakeApi'
@@ -21,6 +23,9 @@ function uploadsList(page: Page) {
 async function chooseWav(page: Page, name = 'interview.wav', seconds = 1) {
   await fileInput(page).setInputFiles({ name, mimeType: 'audio/wav', buffer: wavBuffer(seconds) })
 }
+
+/** A tiny real video in e2e/fixtures */
+const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url))
 
 function readyDialog(page: Page) {
   return page.getByRole('dialog', { name: 'Your subtitles are ready' })
@@ -315,6 +320,7 @@ test.describe('uploading', () => {
     expect(api.startRequests).toEqual([
       {
         name: 'interview.wav',
+        display_name: null,
         size: 8044,
         mime_type: 'audio/wav',
         last_modified: expect.any(Number),
@@ -512,5 +518,72 @@ test.describe('uploading', () => {
 
     expect((await dialog).type()).toBe('beforeunload')
     await (await dialog).dismiss()
+  })
+})
+
+test.describe('videos', () => {
+  // Real FFmpeg (WebAssembly) in the browser: the first run loads its 32 MB engine
+  test.slow()
+
+  test('uploads only the audio, copied out of the video in the browser, named after the video', async ({ page }) => {
+    const sent: Buffer[] = []
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().endsWith('/chunks')) sent.push(request.postDataBuffer()!)
+    })
+    await page.goto('/')
+    await fileInput(page).setInputFiles(fixture('tone.mp4'))
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+
+    await expect(readyDialog(page)).toContainText('tone.mp4', { timeout: 60_000 })
+    const start = api.startRequests[0] as { name: string; display_name: string; size: number }
+    expect(start).toMatchObject({ name: 'tone.mka', display_name: 'tone.mp4' })
+    expect(start.size).toBeLessThan(10_888) // the audio alone, not the whole video
+    // Matroska starts with the EBML magic number
+    expect(Buffer.concat(sent).includes(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))).toBe(true)
+    const download = page.waitForEvent('download')
+    await readyDialog(page).getByRole('button', { name: 'Download SRT' }).click()
+    expect((await download).suggestedFilename()).toBe('tone.srt')
+  })
+
+  test('says when a video has no sound, without uploading it', async ({ page }) => {
+    await page.goto('/')
+    await fileInput(page).setInputFiles(fixture('no-audio.mp4'))
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+
+    await expect(uploadsList(page).getByText('This video has no audio track, so there is nothing to transcribe.')).toBeVisible({
+      timeout: 60_000,
+    })
+    expect(api.startRequests).toEqual([])
+  })
+
+  test('asks before uploading the whole video when its audio cannot be prepared', async ({ page }) => {
+    await page.goto('/')
+    await fileInput(page).setInputFiles({ name: 'broken.mp4', mimeType: 'video/mp4', buffer: Buffer.from('not really a video') })
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+    const dialog = page.getByRole('alertdialog', { name: 'Upload the whole video instead?' })
+    await expect(dialog).toContainText("most likely because it doesn't have enough free memory",{ timeout: 60_000 })
+    await expect(uploadsList(page).getByText('Waiting for your choice: upload the whole video?')).toBeVisible()
+    expect(api.startRequests).toEqual([])
+
+    await dialog.getByRole('button', { name: 'Upload whole video' }).click()
+
+    await expect(readyDialog(page)).toContainText('broken.mp4')
+    expect(api.startRequests[0]).toMatchObject({ name: 'broken.mp4', display_name: null, size: 18 })
+  })
+
+  test('drops the video when the user would rather not upload it whole', async ({ page }) => {
+    await page.goto('/')
+    await fileInput(page).setInputFiles({ name: 'broken.mp4', mimeType: 'video/mp4', buffer: Buffer.from('not really a video') })
+
+    await page.getByRole('button', { name: 'Generate subtitles' }).click()
+    await page.getByRole('alertdialog', { name: 'Upload the whole video instead?' })
+      .getByRole('button', { name: "Don't upload" })
+      .click({ timeout: 60_000 })
+
+    await expect(page.getByText('Nothing in progress.')).toBeVisible()
+    expect(api.startRequests).toEqual([])
   })
 })

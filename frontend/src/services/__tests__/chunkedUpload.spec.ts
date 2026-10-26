@@ -125,6 +125,7 @@ describe('uploadInChunks', () => {
       '/uploads',
       {
         name: 'clip.wav',
+        display_name: null,
         size: 45,
         mime_type: 'audio/wav',
         last_modified: file.lastModified,

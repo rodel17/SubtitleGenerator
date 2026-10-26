@@ -116,6 +116,7 @@ export class FakeApi {
     if (method === 'POST' && path === '/uploads') {
       const body = request.postDataJSON() as {
         name: string
+        display_name: string | null
         size: number
         last_modified: number | null
         language: string
@@ -129,7 +130,7 @@ export class FakeApi {
 
       const upload = fakeUpload({
         id: `upload-${this.startRequests.length}`,
-        name: body.name,
+        name: body.display_name ?? body.name,
         extension: body.name.split('.').pop()!.toLowerCase(),
         mime_type: null,
         last_modified: body.last_modified,

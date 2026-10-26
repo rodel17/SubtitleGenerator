@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { AxiosError, type AxiosInstance } from 'axios'
 
 import { api } from '@/lib/api'
+import { extractAudio } from '@/lib/extractAudio'
 import { resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
 import { useAuthStore } from '@/stores/auth'
 import { POLL_INTERVAL_MS, useUploadsStore } from '@/stores/uploads'
@@ -18,6 +19,11 @@ vi.mock('@/lib/api', async (importOriginal) => ({
     delete: vi.fn<AxiosInstance['delete']>(),
   },
 }))
+vi.mock('@/lib/extractAudio', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/extractAudio')>()),
+  // FFmpeg can't run here: by default "extracting" hands back the same file (see the audio tests for the rest)
+  extractAudio: vi.fn<typeof extractAudio>(async (file: File) => file),
+}))
 vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/chunkedUpload')>()),
   uploadInChunks: vi.fn<typeof uploadInChunks>(),
@@ -27,6 +33,7 @@ vi.mock('@/services/chunkedUpload', async (importOriginal) => ({
 const get = vi.mocked(api.get)
 const upload = vi.mocked(uploadInChunks)
 const resumeUpload = vi.mocked(resumeInChunks)
+const extract = vi.mocked(extractAudio)
 
 // Each mounted view registers a window listener; unmount so tests don't leak into each other
 enableAutoUnmount(afterEach)
@@ -63,9 +70,10 @@ function fileOf(name: string, bytes = 10): File {
   return new File(['x'.repeat(bytes)], name)
 }
 
-function hugeFile(name: string): File {
+/** A file of `bytes` (without allocating them); just over 500 MB by default */
+function hugeFile(name: string, bytes = 500 * 1024 ** 2 + 1): File {
   const file = fileOf(name)
-  Object.defineProperty(file, 'size', { value: 500 * 1024 ** 2 + 1 })
+  Object.defineProperty(file, 'size', { value: bytes })
   return file
 }
 
@@ -93,6 +101,7 @@ beforeEach(() => {
   vi.mocked(api.post).mockReset()
   upload.mockReset().mockResolvedValue(resource())
   resumeUpload.mockReset()
+  extract.mockReset().mockImplementation(async (file: File) => file)
   vi.mocked(api.delete).mockReset()
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn<typeof URL.createObjectURL>(() => 'blob:x'), revokeObjectURL: vi.fn<typeof URL.revokeObjectURL>() }))
 })
@@ -201,22 +210,39 @@ describe('choosing files', () => {
     expect(wrapper.text()).toContain('Unsupported format. Try MP4, MOV, MKV.')
   })
 
-  it('lists a file over the size limit as failed instead of selecting it', async () => {
+  it('lists an audio file over 500 MB as failed instead of selecting it', async () => {
     const wrapper = await mountView()
 
-    await choose(wrapper, [hugeFile('movie.mp4')])
+    await choose(wrapper, [hugeFile('podcast.mp3')])
 
     expect(wrapper.text()).not.toContain('Selected')
     expect(wrapper.text()).toContain('File is larger than the 500 MB limit.')
   })
 
+  it('accepts videos up to 4 GB, since only their audio is uploaded', async () => {
+    const wrapper = await mountView()
+
+    await choose(wrapper, [hugeFile('movie.mp4', 4 * 1024 ** 3)])
+
+    expect(wrapper.text()).toContain('Selected (1)')
+  })
+
+  it('lists a video over 4 GB as failed instead of selecting it', async () => {
+    const wrapper = await mountView()
+
+    await choose(wrapper, [hugeFile('movie.mp4', 4 * 1024 ** 3 + 1)])
+
+    expect(wrapper.text()).not.toContain('Selected')
+    expect(wrapper.text()).toContain('Video is larger than the 4.0 GB limit.')
+  })
+
   it('keeps the valid files from a mixed selection', async () => {
     const wrapper = await mountView()
 
-    await choose(wrapper, [fileOf('good.mp4'), fileOf('bad.txt'), hugeFile('huge.mov')])
+    await choose(wrapper, [fileOf('good.mp4'), fileOf('bad.txt'), hugeFile('huge.wav')])
 
     expect(wrapper.text()).toContain('Selected (1)')
-    expect(useUploadsStore().items.map((item) => item.name)).toEqual(['huge.mov', 'bad.txt'])
+    expect(useUploadsStore().items.map((item) => item.name)).toEqual(['huge.wav', 'bad.txt'])
   })
 
   it('removes one previewed file', async () => {
@@ -511,6 +537,69 @@ describe('deleting an upload', () => {
     expect(dialog(wrapper).exists()).toBe(false)
     expect(wrapper.text()).not.toContain('notes.txt')
     expect(api.delete).not.toHaveBeenCalled()
+  })
+})
+
+describe("when a video's audio can't be prepared", () => {
+  const dialog = (wrapper: Awaited<ReturnType<typeof mountView>>) => wrapper.find('[role="alertdialog"]')
+  const dialogButton = (wrapper: Awaited<ReturnType<typeof mountView>>, name: string) =>
+    dialog(wrapper).findAll('button').find((button) => button.text() === name)!
+
+  async function generateFor(file: File) {
+    extract.mockRejectedValue(new Error('RuntimeError: Aborted(OOM)'))
+    const wrapper = await mountView()
+    await choose(wrapper, [file])
+    await generateButton(wrapper).trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('asks before uploading the whole video, and says why', async () => {
+    const wrapper = await generateFor(fileOf('holiday.mp4', 2048))
+
+    expect(dialog(wrapper).text()).toContain('Upload the whole video instead?')
+    expect(dialog(wrapper).text()).toContain(
+      `We couldn't prepare "holiday.mp4" on this device, most likely because it doesn't have enough free memory. ` +
+        'Normally only the audio is uploaded. Instead, we can upload the whole video (2.0 KB), which will take much longer.',
+    )
+    expect(upload).not.toHaveBeenCalled()
+  })
+
+  it('uploads the whole video when the user agrees', async () => {
+    const video = fileOf('holiday.mp4')
+    const wrapper = await generateFor(video)
+
+    await dialogButton(wrapper, 'Upload whole video').trigger('click')
+    await flushPromises()
+
+    expect(upload).toHaveBeenCalledWith(video, expect.anything())
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('drops the video when the user declines', async () => {
+    const wrapper = await generateFor(fileOf('holiday.mp4'))
+
+    await dialogButton(wrapper, "Don't upload").trigger('click')
+    await flushPromises()
+
+    expect(upload).not.toHaveBeenCalled()
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(useUploadsStore().items).toEqual([])
+  })
+
+  it('credits FFmpeg, whose licence asks for it, with a link to its source', async () => {
+    const wrapper = await mountView()
+
+    const link = wrapper.get('a[href="https://github.com/ffmpegwasm/ffmpeg.wasm"]')
+    expect(link.text()).toBe('ffmpeg.wasm')
+    expect(wrapper.text()).toContain('(FFmpeg, GPL-2.0-or-later)')
+  })
+
+  it('does not ask for a video over 500 MB, and says what to do instead', async () => {
+    const wrapper = await generateFor(hugeFile('long.mp4', 600 * 1024 ** 2))
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.text()).toContain("This browser can't prepare large videos.")
   })
 })
 

@@ -27,6 +27,8 @@ class StoreUploadRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
+            // The video's name when "name" is only its extracted audio, so subtitles keep it
+            'display_name' => ['nullable', 'string', 'max:255'],
             'size' => ['required', 'integer', 'min:1', 'max:'.config('uploads.max_size')],
             'mime_type' => ['nullable', 'string', 'max:255'],
             'last_modified' => ['nullable', 'integer', 'min:0'],

@@ -16,6 +16,8 @@ export interface ChunkedUploadOptions {
   translateTo?: string
   /** Standard ("local", the default) or Enhanced ("azure") */
   translationEngine?: TranslationEngine
+  /** Name to show and name the subtitles after, when the file is the audio of a video */
+  displayName?: string
   signal: AbortSignal
   /** Called once the API has created the upload, before any chunk is sent */
   onStarted?: (upload: UploadResource) => void
@@ -79,6 +81,7 @@ export async function uploadInChunks(
     '/uploads',
     {
       name: file.name,
+      display_name: options.displayName ?? null,
       size: file.size,
       mime_type: file.type || null,
       last_modified: file.lastModified,

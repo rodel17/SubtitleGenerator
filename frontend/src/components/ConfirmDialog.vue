@@ -14,8 +14,10 @@ const props = withDefaults(
     /** The confirmed action is running: show a spinner and block closing */
     busy?: boolean
     error?: string | null
+    /** "danger" (red) for deleting; "primary" (accent) for going ahead with something */
+    tone?: 'danger' | 'primary'
   }>(),
-  { busyLabel: 'Working…', cancelLabel: 'Cancel', busy: false, error: null },
+  { busyLabel: 'Working…', cancelLabel: 'Cancel', busy: false, error: null, tone: 'danger' },
 )
 
 const emit = defineEmits<{
@@ -85,7 +87,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
         </button>
         <button
           type="button"
-          class="flex h-10 cursor-pointer items-center gap-2 rounded-[10px] bg-red-600 px-4 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-wait disabled:opacity-80"
+          class="flex h-10 cursor-pointer items-center gap-2 rounded-[10px] px-4 text-sm font-semibold text-white disabled:cursor-wait disabled:opacity-80"
+          :class="tone === 'primary' ? 'bg-accent hover:bg-accent-hover' : 'bg-red-600 hover:bg-red-700'"
           :disabled="busy"
           :aria-busy="busy"
           @click="emit('confirm')"

@@ -53,6 +53,37 @@ describe('UploadListItem', () => {
 
       expect(wrapper.emitted('cancel')).toEqual([['item-1']])
     })
+
+    it("says when only a video's audio is being uploaded", () => {
+      const wrapper = mount(UploadListItem, { props: { item: item({ status: 'uploading', progress: 30, audioOnly: true }) } })
+
+      expect(wrapper.text()).toContain('Uploading audio · 30%')
+    })
+  })
+
+  describe('preparing the audio of a video', () => {
+    it('shows the percentage and a matching progress bar', () => {
+      const wrapper = mount(UploadListItem, { props: { item: item({ status: 'preparing', progress: 12 }) } })
+
+      expect(wrapper.text()).toContain('Preparing audio · 12%')
+      expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('12')
+    })
+
+    it('offers only a cancel button, which emits the item id', async () => {
+      const wrapper = mount(UploadListItem, { props: { item: item({ status: 'preparing', progress: 12 }) } })
+
+      expect(buttonNames(wrapper)).toEqual(['Cancel upload'])
+      await wrapper.get('button').trigger('click')
+
+      expect(wrapper.emitted('cancel')).toEqual([['item-1']])
+    })
+  })
+
+  it('says it waits for the user to allow uploading the whole video', () => {
+    const wrapper = mount(UploadListItem, { props: { item: item({ status: 'confirm_full_upload' }) } })
+
+    expect(wrapper.text()).toContain('Waiting for your choice: upload the whole video?')
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
   })
 
   it.each([
