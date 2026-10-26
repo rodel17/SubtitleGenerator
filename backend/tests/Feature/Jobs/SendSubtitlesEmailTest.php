@@ -116,6 +116,15 @@ it('comes from SubGen, with the SubGen header and footer and no Laravel branding
     $mail->assertDontSeeInText('Laravel');
 });
 
+it('says when Standard translated because Enhanced was unavailable', function () {
+    $upload = emailingUpload(['translate_to' => 'fil', 'translation_engine' => 'azure', 'translated_with' => 'local']);
+
+    (new SubtitlesReady($upload))->assertSeeInText('translated with Standard (on our own server), because Enhanced (Microsoft Azure) was unavailable');
+
+    $upload->update(['translated_with' => 'azure']);
+    (new SubtitlesReady($upload))->assertDontSeeInText('was unavailable');
+});
+
 it('tells the user the subtitles are attached and deleted from the servers', function () {
     $mail = new SubtitlesReady(emailingUpload());
 

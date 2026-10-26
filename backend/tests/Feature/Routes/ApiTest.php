@@ -13,6 +13,7 @@ it('returns 401 JSON for every protected route without a token', function (strin
 })->with([
     'current user' => ['GET', '/api/user'],
     'sign out' => ['POST', '/api/logout'],
+    'translation engines' => ['GET', '/api/translation-engines'],
     'list uploads' => ['GET', '/api/uploads'],
     'start upload' => ['POST', '/api/uploads'],
     'show upload' => ['GET', '/api/uploads/{upload}'],
@@ -47,3 +48,13 @@ it("returns the signed-in user's profile without Google or password fields", fun
         'avatar' => 'https://a.test/x',
     ]]);
 });
+
+it('offers Enhanced translation only when Azure is configured', function (?string $key, array $engines) {
+    config(['translation.azure.key' => $key, 'translation.azure.region' => 'southeastasia']);
+    Sanctum::actingAs(User::factory()->create());
+
+    $this->getJson('/api/translation-engines')->assertOk()->assertExactJson(['data' => $engines]);
+})->with([
+    'configured' => ['test-key', ['local', 'azure']],
+    'not configured' => [null, ['local']],
+]);

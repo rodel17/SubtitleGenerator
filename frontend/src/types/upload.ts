@@ -41,6 +41,10 @@ export interface UploadItem {
   language?: string
   /** Language the subtitles are translated into; unset keeps the spoken language */
   translateTo?: string
+  /** Engine chosen for the translation */
+  translationEngine?: TranslationEngine
+  /** Engine that actually translated: "local" when Enhanced was chosen but unavailable */
+  translatedWith?: TranslationEngine
   format?: SubtitleFormat
   error?: string
   /** Where to download the subtitles, once ready */
@@ -62,6 +66,14 @@ export interface UploadItem {
 }
 
 export type EmailStatus = 'sending' | 'failed'
+
+/** "local" = Standard (on our own server), "azure" = Enhanced (Microsoft Azure) */
+export type TranslationEngine = 'local' | 'azure'
+
+/** Enhanced (Azure) was chosen, but Standard translated because Azure was unavailable */
+export function translationFellBack(item: UploadItem): boolean {
+  return item.translationEngine === 'azure' && item.translatedWith === 'local'
+}
 
 /**
  * Ready subtitles on their way to the user's inbox. These aren't offered for
@@ -107,8 +119,10 @@ export interface UploadResource {
   total_chunks: number
   language: string | null
   translate_to: string | null
-  /** "local" (translated on our server) when translating, otherwise null */
-  translation_engine: string | null
+  /** Engine chosen when translating, otherwise null */
+  translation_engine: TranslationEngine | null
+  /** Engine that actually translated, once done */
+  translated_with: TranslationEngine | null
   subtitle_format: SubtitleFormat
   email_when_ready: boolean
   status: ServerUploadStatus

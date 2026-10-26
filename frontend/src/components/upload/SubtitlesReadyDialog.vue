@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { formatBytes, formatTime } from '@/lib/format'
-import { languageLabel, translationLabel, type UploadItem } from '@/types/upload'
+import { languageLabel, translationFellBack, translationLabel, type UploadItem } from '@/types/upload'
 
 /**
  * Shown when an upload's subtitles are ready. It can't be closed (no Esc, no
@@ -102,6 +102,9 @@ onBeforeUnmount(() => previouslyFocused?.focus())
             v-if="expiresAt"
             >, or at {{ expiresAt }} if you don't</template
           >.
+        </p>
+        <p v-if="translationFellBack(item)" class="text-[13px] leading-normal text-amber-700" data-test="fell-back">
+          Translated with Standard (on our own server): Enhanced was unavailable.
         </p>
         <p v-if="error" role="alert" class="text-sm text-red-700">
           {{ error }}

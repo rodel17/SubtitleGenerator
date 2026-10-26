@@ -37,6 +37,7 @@ class Upload extends Model
         'language',
         'translate_to',
         'translation_engine',
+        'translated_with',
         'subtitle_format',
         'email_when_ready',
         'status',
@@ -185,6 +186,14 @@ class Upload extends Model
     public function transcriptPath(): string
     {
         return "transcripts/{$this->id}.json";
+    }
+
+    /**
+     * Enhanced (Azure) was chosen but Standard (local) translated, because Azure was unavailable.
+     */
+    public function translationFellBack(): bool
+    {
+        return $this->translation_engine === 'azure' && $this->translated_with === 'local';
     }
 
     /**

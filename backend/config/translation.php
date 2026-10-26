@@ -41,4 +41,23 @@ return [
         'timeout' => (int) env('TRANSLATOR_TIMEOUT', 300),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Azure Translator ("Enhanced")
+    |--------------------------------------------------------------------------
+    |
+    | Offered only when a key and region are set. Free F0 tier: 2M characters
+    | a month, ~33k a minute. The Asia Pacific endpoint keeps processing in
+    | Japan East / Southeast Asia. Microsoft doesn't store the text ("No Trace").
+    | When Azure can't be used (quota, outage) the local translator takes over.
+    |
+    */
+
+    'azure' => [
+        'key' => env('AZURE_TRANSLATOR_KEY'),
+        'region' => env('AZURE_TRANSLATOR_REGION'),
+        'endpoint' => env('AZURE_TRANSLATOR_ENDPOINT', 'https://api-apc.cognitive.microsofttranslator.com'),
+        'timeout' => (int) env('AZURE_TRANSLATOR_TIMEOUT', 60),
+    ],
+
 ];

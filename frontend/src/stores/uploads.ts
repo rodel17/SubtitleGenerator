@@ -13,6 +13,7 @@ import {
   subtitleFileName,
   type ServerUploadStatus,
   type SubtitleFormat,
+  type TranslationEngine,
   type UploadItem,
   type UploadResource,
   type UploadStatus,
@@ -52,6 +53,8 @@ function fromResource(resource: UploadResource): UploadItem {
     error: errorFor(resource),
     language: resource.language ?? undefined,
     translateTo: resource.translate_to ?? undefined,
+    translationEngine: resource.translation_engine ?? undefined,
+    translatedWith: resource.translated_with ?? undefined,
     format: resource.subtitle_format,
     downloadUrl: resource.download_url,
     expiresAt: resource.expires_at ?? undefined,
@@ -68,9 +71,17 @@ function applyResource(item: UploadItem, resource: UploadResource) {
   item.error = errorFor(resource)
   item.downloadUrl = resource.download_url
   item.expiresAt = resource.expires_at ?? undefined
+  item.translatedWith = resource.translated_with ?? undefined
   item.emailWhenReady = resource.email_when_ready
   item.emailStatus = resource.email_status ?? undefined
   item.emailError = resource.email_error ?? undefined
+}
+
+/** Optional choices made on the upload form */
+export interface EnqueueOptions {
+  emailWhenReady?: boolean
+  translateTo?: string
+  translationEngine?: TranslationEngine
 }
 
 /** An emailed upload that the server has since deleted, to tell the user it arrived */
@@ -85,6 +96,8 @@ export const useUploadsStore = defineStore('uploads', () => {
   const loadError = ref<string | null>(null)
   /** Subtitles the server has emailed (and then deleted), until the user dismisses the notice */
   const emailed = ref<EmailedUpload[]>([])
+  /** Engines the server can translate with; Enhanced ("azure") only when it's configured */
+  const translationEngines = ref<TranslationEngine[]>(['local'])
 
   // Not reactive: File objects and controllers only matter to the upload loop.
   // An interrupted upload keeps its File here so it can resume without re-picking it.
@@ -128,13 +141,19 @@ export const useUploadsStore = defineStore('uploads', () => {
     }
   }
 
-  function enqueue(
-    files: File[],
-    language: string,
-    format: SubtitleFormat,
-    emailWhenReady = false,
-    translateTo?: string,
-  ) {
+  /** Whether Enhanced translation can be offered; Standard always can */
+  async function fetchTranslationEngines() {
+    try {
+      const { data } = await api.get<{ data: TranslationEngine[] }>('/translation-engines')
+      translationEngines.value = data.data
+    } catch {
+      translationEngines.value = ['local']
+    }
+  }
+
+  function enqueue(files: File[], language: string, format: SubtitleFormat, options: EnqueueOptions = {}) {
+    const { emailWhenReady = false, translateTo, translationEngine } = options
+
     const queued = files.map((file) => {
       const id = localId()
       pendingFiles.set(id, file)
@@ -150,6 +169,7 @@ export const useUploadsStore = defineStore('uploads', () => {
         format,
         emailWhenReady,
         translateTo,
+        translationEngine: translateTo ? (translationEngine ?? 'local') : undefined,
       }
     })
 
@@ -245,6 +265,7 @@ export const useUploadsStore = defineStore('uploads', () => {
             format: item.format ?? 'srt',
             emailWhenReady: item.emailWhenReady ?? false,
             translateTo: item.translateTo,
+            translationEngine: item.translationEngine,
             onStarted: (resource) => (item.serverId = resource.id),
           })
       applyResource(item, accepted)
@@ -404,9 +425,11 @@ export const useUploadsStore = defineStore('uploads', () => {
     isLoading,
     loadError,
     emailed,
+    translationEngines,
     hasActiveUploads,
     nextReady,
     fetchRecent,
+    fetchTranslationEngines,
     enqueue,
     addRejected,
     hasFileFor,

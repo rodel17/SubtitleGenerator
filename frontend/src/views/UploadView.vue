@@ -20,6 +20,7 @@ import {
   SERVER_PROCESSING_STATUSES,
   TRANSLATION_TARGETS,
   type SubtitleFormat,
+  type TranslationEngine,
   type UploadItem,
 } from '@/types/upload'
 
@@ -38,6 +39,9 @@ const format = ref<SubtitleFormat>('srt')
 const emailWhenReady = ref(false)
 /** Language to translate the subtitles into; '' keeps the spoken language */
 const translateTo = ref('')
+/** Standard (on our own server) unless Enhanced (Azure) is picked */
+const translationEngine = ref<TranslationEngine>('local')
+const offersEnhanced = computed(() => uploads.translationEngines.includes('azure'))
 
 function addFiles(files: File[]) {
   for (const file of files) {
@@ -69,8 +73,11 @@ function generate() {
     selectedFiles.value.map((selected) => selected.file),
     language.value,
     format.value,
-    emailWhenReady.value,
-    translateTo.value || undefined,
+    {
+      emailWhenReady: emailWhenReady.value,
+      translateTo: translateTo.value || undefined,
+      translationEngine: offersEnhanced.value ? translationEngine.value : 'local',
+    },
   )
   selectedFiles.value = []
 }
@@ -200,6 +207,7 @@ function warnBeforeLeaving(event: BeforeUnloadEvent) {
 onMounted(() => {
   window.addEventListener('beforeunload', warnBeforeLeaving)
   if (!uploads.items.length) void uploads.fetchRecent()
+  void uploads.fetchTranslationEngines()
 })
 
 onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving))
@@ -261,8 +269,23 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
               {{ target.label }}
             </option>
           </select>
-          <p v-if="translateTo" class="text-xs text-slate-600" data-test="translation-note">
-            Translated on our own server; the text never leaves it.
+          <fieldset v-if="translateTo && offersEnhanced" class="mt-1 flex flex-col gap-1.5">
+            <legend class="sr-only">Translation quality</legend>
+            <label class="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+              <input v-model="translationEngine" type="radio" value="local" class="accent-accent" />
+              Standard: private, on our own server
+            </label>
+            <label class="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+              <input v-model="translationEngine" type="radio" value="azure" class="accent-accent" />
+              Enhanced: better quality, by Microsoft Azure
+            </label>
+          </fieldset>
+          <p v-if="translateTo" class="text-xs leading-normal text-slate-600" data-test="translation-note">
+            {{
+              offersEnhanced && translationEngine === 'azure'
+                ? "The transcript text is sent to Microsoft Azure for translation. Microsoft doesn't store it or use it for training."
+                : 'Translated on our own server; the text never leaves it.'
+            }}
           </p>
         </div>
 
