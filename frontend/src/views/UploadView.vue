@@ -16,6 +16,8 @@ import {
   isEmailing,
   LANGUAGES,
   MAX_FILE_SIZE,
+  MAX_VIDEO_SIZE,
+  mediaKindOf,
   RETENTION_HOURS,
   SERVER_PROCESSING_STATUSES,
   TRANSLATION_TARGETS,
@@ -52,7 +54,9 @@ function addFiles(files: File[]) {
           .map((ext) => ext.toUpperCase())
           .join(', ')}.`,
       )
-    } else if (file.size > MAX_FILE_SIZE) {
+    } else if (mediaKindOf(file.name) === 'video' && file.size > MAX_VIDEO_SIZE) {
+      uploads.addRejected(file, `Video is larger than the ${formatBytes(MAX_VIDEO_SIZE)} limit.`)
+    } else if (mediaKindOf(file.name) === 'audio' && file.size > MAX_FILE_SIZE) {
       uploads.addRejected(file, `File is larger than the ${formatBytes(MAX_FILE_SIZE)} limit.`)
     } else {
       selectedFiles.value.push({ id: localId(), file })
@@ -154,6 +158,15 @@ function cancelRemove() {
   pendingRemoval.value = null
   removalError.value = null
 }
+
+// A video whose audio couldn't be prepared (most likely too little memory) is only uploaded whole if the user agrees
+const fullUploadMessage = computed(() => {
+  const item = uploads.nextFullUploadConfirmation
+  if (!item) return ''
+
+  return `We couldn't prepare "${item.name}" on this device, most likely because it doesn't have enough free memory. ` +
+    `Normally only the audio is uploaded. Instead, we can upload the whole video (${formatBytes(item.size)}), which will take much longer.`
+})
 
 // Ready subtitles are only listed while being emailed; otherwise the dialog asks for them
 const listedItems = computed(() =>
@@ -310,8 +323,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
         class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5"
       >
         <span class="text-[13px] text-slate-600">
-          Files are processed privately and deleted from our servers as soon as you download or
-          email the subtitles, or {{ RETENTION_HOURS }} hours after processing if you don't.
+          Your video stays on your device; only its audio is uploaded. Files are processed privately
+          and deleted from our servers as soon as you download or email the subtitles, or
+          {{ RETENTION_HOURS }} hours after processing if you don't.
         </span>
         <div class="flex gap-2.5">
           <button
@@ -404,6 +418,17 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
       @cancel="cancelRemove"
     />
 
+    <ConfirmDialog
+      :open="uploads.nextFullUploadConfirmation !== undefined"
+      title="Upload the whole video instead?"
+      :message="fullUploadMessage"
+      confirm-label="Upload whole video"
+      cancel-label="Don't upload"
+      tone="primary"
+      @confirm="uploads.confirmFullUpload(uploads.nextFullUploadConfirmation!.id)"
+      @cancel="uploads.remove(uploads.nextFullUploadConfirmation!.id)"
+    />
+
     <SubtitlesReadyDialog
       v-if="uploads.nextReady"
       :item="uploads.nextReady"
@@ -414,5 +439,18 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeavi
       @email="uploads.email"
       @discard="discard"
     />
+
+    <!-- The FFmpeg engine (@ffmpeg/core) is GPL-2.0-or-later: credit it and point to its source -->
+    <p class="text-center text-xs text-slate-500">
+      Audio is copied out of videos in your browser with
+      <a
+        href="https://github.com/ffmpegwasm/ffmpeg.wasm"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="underline hover:text-slate-700"
+        >ffmpeg.wasm</a
+      >
+      (FFmpeg, GPL-2.0-or-later).
+    </p>
   </main>
 </template>

@@ -213,6 +213,26 @@ describe('store', function () {
         $this->postJson('/api/uploads', $payload)->assertCreated();
     });
 
+    it("names an upload of a video's extracted audio after the video", function () {
+        $response = $this->postJson('/api/uploads', [
+            'name' => 'Team Interview.mka',
+            'display_name' => 'Team Interview.mp4',
+            'size' => 45,
+            'subtitle_format' => 'srt',
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('data.name', 'Team Interview.mp4')
+            ->assertJsonPath('data.extension', 'mka');
+        expect(Upload::sole()->subtitleFileName('srt'))->toBe('Team Interview.srt');
+    });
+
+    it('names the upload after the file when no display name is sent', function () {
+        $this->postJson('/api/uploads', ['name' => 'clip.mka', 'display_name' => null, 'size' => 45, 'subtitle_format' => 'srt'])
+            ->assertCreated()
+            ->assertJsonPath('data.name', 'clip.mka');
+    });
+
     it('keeps the file modification time so a resumed upload can be matched to its file', function () {
         $response = $this->postJson('/api/uploads', [
             'name' => 'clip.mp4',
@@ -327,6 +347,7 @@ describe('store', function () {
         ['clip.mp3', 'mp3'],
         ['clip.wav', 'wav'],
         ['clip.m4a', 'm4a'],
+        ['clip.mka', 'mka'],
         ['CLIP.MP4', 'mp4'],
         ['my.holiday.video.Mov', 'mov'],
     ]);
@@ -372,6 +393,8 @@ describe('store', function () {
         'unknown subtitle format' => [['subtitle_format' => 'ass'], 'subtitle_format', 'The selected subtitle format is invalid.'],
         'language too long' => [['language' => 'english-uk'.'x'], 'language', 'The language field must not be greater than 10 characters.'],
         'mime type too long' => [['mime_type' => str_repeat('a', 256)], 'mime_type', 'The mime type field must not be greater than 255 characters.'],
+        'display name too long' => [['display_name' => str_repeat('a', 256)], 'display_name', 'The display name field must not be greater than 255 characters.'],
+        'display name not a string' => [['display_name' => ['clip.mp4']], 'display_name', 'The display name field must be a string.'],
     ]);
 
     it('accepts a file of exactly the maximum size', function () {
@@ -400,7 +423,7 @@ describe('store', function () {
         ]);
 
         $response->assertUnprocessable()->assertJsonValidationErrors([
-            'name' => 'Unsupported format. Allowed: MP4, MOV, MKV, TS, MP3, WAV, M4A.',
+            'name' => 'Unsupported format. Allowed: MP4, MOV, MKV, TS, MP3, WAV, M4A, MKA.',
         ]);
         $this->assertDatabaseCount('uploads', 0);
     })->with([

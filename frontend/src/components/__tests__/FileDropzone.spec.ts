@@ -11,7 +11,7 @@ describe('FileDropzone', () => {
   it('lists the accepted formats and the size limit', () => {
     const wrapper = mount(FileDropzone)
 
-    expect(wrapper.text()).toContain('MP4, MOV, MKV, TS, MP3, WAV, M4A · up to 500 MB')
+    expect(wrapper.text()).toContain('MP4, MOV, MKV, TS, MP3, WAV, M4A · videos up to 4.0 GB, audio up to 500 MB')
   })
 
   it('restricts the file picker to accepted extensions and allows several files', () => {

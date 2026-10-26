@@ -38,7 +38,7 @@ const emailing = computed(() => isEmailing(props.item))
 
 const isInProgress = computed(
   () =>
-    ['uploading', 'processing', 'uploaded', 'transcribing', 'translating'].includes(props.item.status) ||
+    ['preparing', 'uploading', 'processing', 'uploaded', 'transcribing', 'translating'].includes(props.item.status) ||
     emailing.value,
 )
 
@@ -48,7 +48,8 @@ const hasProgress = computed(() => props.item.status !== 'uploaded' && !emailing
 const progressLabel = computed(() => {
   const percent = `${props.item.progress ?? 0}%`
   if (emailing.value) return 'Emailing to you…'
-  if (props.item.status === 'uploading') return `Uploading · ${percent}`
+  if (props.item.status === 'preparing') return `Preparing audio · ${percent}`
+  if (props.item.status === 'uploading') return `Uploading${props.item.audioOnly ? ' audio' : ''} · ${percent}`
   if (props.item.status === 'processing') return `Finalizing · ${percent}`
   if (props.item.status === 'uploaded') return 'Waiting to transcribe…'
   if (props.item.status === 'translating') return `Translating · ${percent}`
@@ -119,13 +120,16 @@ const secondaryButton =
     <div v-else class="flex min-w-0 flex-[1_1_240px] flex-col gap-1">
       <span class="truncate text-sm font-semibold">{{ item.name }}</span>
       <span v-if="item.status === 'interrupted'" class="text-[13px] text-amber-700">{{ item.error }}</span>
+      <span v-else-if="item.status === 'confirm_full_upload'" class="text-[13px] text-amber-700">
+        Waiting for your choice: upload the whole video?
+      </span>
       <span v-else-if="item.status === 'failed'" class="text-[13px] text-red-700">{{ item.error }}</span>
       <span v-else class="text-[13px] text-slate-600">Queued · {{ detailsLabel }}</span>
     </div>
 
     <!-- Actions -->
     <button
-      v-if="item.status === 'uploading'"
+      v-if="item.status === 'uploading' || item.status === 'preparing'"
       type="button"
       aria-label="Cancel upload"
       class="flex size-11 cursor-pointer items-center justify-center rounded-[10px] text-slate-600 hover:bg-slate-100"

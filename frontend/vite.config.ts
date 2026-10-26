@@ -14,6 +14,10 @@ export default defineConfig({
     // vueDevTools(), // floating DevTools button; uncomment (with the import) to bring it back
     tailwindcss(),
   ],
+  // ffmpeg.wasm starts its own worker from its own files; pre-bundling would break those paths
+  optimizeDeps: {
+    exclude: ['@ffmpeg/ffmpeg'],
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

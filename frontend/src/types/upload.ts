@@ -2,6 +2,10 @@ export type SubtitleFormat = 'srt' | 'vtt' | 'both'
 
 export type UploadStatus =
   | 'queued'
+  /** Copying the audio track out of a video in the browser; only the audio is uploaded */
+  | 'preparing'
+  /** The audio couldn't be prepared on this device; waiting for the user to allow uploading the whole video */
+  | 'confirm_full_upload'
   | 'uploading'
   /** Stopped part-way; the server keeps the chunks it has, so it can be resumed */
   | 'interrupted'
@@ -45,6 +49,8 @@ export interface UploadItem {
   translationEngine?: TranslationEngine
   /** Engine that actually translated: "local" when Enhanced was chosen but unavailable */
   translatedWith?: TranslationEngine
+  /** Only the audio (copied out of the video in the browser) is or was uploaded */
+  audioOnly?: boolean
   format?: SubtitleFormat
   error?: string
   /** Where to download the subtitles, once ready */
@@ -142,8 +148,14 @@ export interface UploadResource {
 /** Must match `uploads.allowed_extensions` in backend/config/uploads.php ("ts" = MPEG transport stream) */
 export const ACCEPTED_EXTENSIONS = ['mp4', 'mov', 'mkv', 'ts', 'mp3', 'wav', 'm4a'] as const
 
-/** Must match `uploads.max_size` in backend/config/uploads.php */
+/** Must match `uploads.max_size` in backend/config/uploads.php: the most that is uploaded */
 export const MAX_FILE_SIZE = 500 * 1024 * 1024
+
+/**
+ * Largest video that can be chosen. Only its audio is uploaded (copied out in the
+ * browser), which must stay within MAX_FILE_SIZE; a whole video only within MAX_FILE_SIZE.
+ */
+export const MAX_VIDEO_SIZE = 4 * 1024 * 1024 * 1024
 
 /** Must match `uploads.retention_hours` in backend/config/uploads.php */
 export const RETENTION_HOURS = 6

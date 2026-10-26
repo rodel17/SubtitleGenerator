@@ -4,10 +4,12 @@ import { isAxiosError } from 'axios'
 import { api, errorMessage } from '@/lib/api'
 import { isRetryable, resumeInChunks, uploadInChunks } from '@/services/chunkedUpload'
 import { saveBlob } from '@/lib/download'
+import { extractAudio, NoAudioTrackError } from '@/lib/extractAudio'
 import { formatBytes } from '@/lib/format'
 import { localId } from '@/lib/id'
 import {
   isEmailing,
+  MAX_FILE_SIZE,
   mediaKindOf,
   SERVER_PROCESSING_STATUSES,
   subtitleFileName,
@@ -23,6 +25,9 @@ import {
 export const POLL_INTERVAL_MS = 2000
 
 const INTERRUPTED_MESSAGE = 'Upload was interrupted. Resume to continue where it stopped.'
+
+const CANNOT_PREPARE_MESSAGE =
+  "This browser can't prepare large videos. Use Chrome, Edge or Firefox on a computer, or choose a file under 500 MB."
 
 const STATUS_FROM_SERVER: Record<ServerUploadStatus, UploadStatus> = {
   uploading: 'interrupted',
@@ -58,6 +63,7 @@ function fromResource(resource: UploadResource): UploadItem {
     format: resource.subtitle_format,
     downloadUrl: resource.download_url,
     expiresAt: resource.expires_at ?? undefined,
+    audioOnly: resource.extension === 'mka',
     emailWhenReady: resource.email_when_ready,
     emailStatus: resource.email_status ?? undefined,
     emailError: resource.email_error ?? undefined,
@@ -102,13 +108,22 @@ export const useUploadsStore = defineStore('uploads', () => {
   // Not reactive: File objects and controllers only matter to the upload loop.
   // An interrupted upload keeps its File here so it can resume without re-picking it.
   const pendingFiles = new Map<string, File>()
+  /** Audio copied out of a video in pendingFiles; this is what gets uploaded */
+  const preparedAudio = new Map<string, File>()
+  /** Videos the user agreed to upload whole because their audio couldn't be prepared */
+  const uploadWhole = new Set<string>()
   const controllers = new Map<string, AbortController>()
   let isProcessingQueue = false
   let pollTimer: ReturnType<typeof setTimeout> | null = null
 
   /** The browser must stay on the page for these; the server handles everything after */
   const hasActiveUploads = computed(() =>
-    items.value.some((item) => ['queued', 'uploading'].includes(item.status)),
+    items.value.some((item) => ['queued', 'preparing', 'confirm_full_upload', 'uploading'].includes(item.status)),
+  )
+
+  /** A video whose audio couldn't be prepared, waiting for the user to allow uploading it whole */
+  const nextFullUploadConfirmation = computed(() =>
+    items.value.find((item) => item.status === 'confirm_full_upload'),
   )
 
   /**
@@ -206,13 +221,17 @@ export const useUploadsStore = defineStore('uploads', () => {
     const source = file ?? pendingFiles.get(id)
     if (!source) return 'Choose the file to resume.'
 
+    // Only a video's audio was uploaded: the size to compare is the audio's, checked once it's prepared again
+    const sizeMatches = item.audioOnly && mediaKindOf(source.name) === 'video' ? true : source.size === item.size
     const matches =
       source.name === item.name &&
-      source.size === item.size &&
+      sizeMatches &&
       (item.lastModified === undefined || source.lastModified === item.lastModified)
 
     if (!matches) {
-      item.error = `That is a different file. Choose "${item.name}" (${formatBytes(item.size)}) to resume.`
+      item.error = item.audioOnly
+        ? `That is a different file. Choose "${item.name}" to resume.`
+        : `That is a different file. Choose "${item.name}" (${formatBytes(item.size)}) to resume.`
       return item.error
     }
 
@@ -238,12 +257,93 @@ export const useUploadsStore = defineStore('uploads', () => {
     }
   }
 
+  /** The user agreed to upload the whole video after its audio couldn't be prepared. */
+  function confirmFullUpload(id: string) {
+    const item = items.value.find((candidate) => candidate.id === id)
+    if (!item || item.status !== 'confirm_full_upload') return
+
+    uploadWhole.add(id)
+    item.status = 'queued'
+    item.error = undefined
+    void processQueue()
+  }
+
+  /**
+   * What to upload for a queued file: an audio file as it is, and for a video only its
+   * audio, copied out in the browser. Null when there is nothing to upload (yet): the
+   * row then says why, or waits for the user to allow uploading the whole video.
+   */
+  async function fileToUpload(item: UploadItem, original: File, signal: AbortSignal): Promise<File | null> {
+    if (mediaKindOf(original.name) !== 'video' || uploadWhole.has(item.id)) return original
+
+    const prepared = preparedAudio.get(item.id)
+    if (prepared) return prepared
+
+    item.status = 'preparing'
+    item.progress = 0
+
+    try {
+      const audio = await extractAudio(original, { signal, onProgress: (percent) => (item.progress = percent) })
+
+      if (audio.size > MAX_FILE_SIZE) {
+        return fail(item, `The audio of this video is larger than the ${formatBytes(MAX_FILE_SIZE)} limit.`)
+      }
+      // Resuming after a reload: the audio prepared again must be what the server has
+      if (item.serverId && audio.size !== item.size) {
+        return fail(item, "This video doesn't match the interrupted upload. Remove it and add the video again.")
+      }
+
+      preparedAudio.set(item.id, audio)
+      item.audioOnly = true
+      return audio
+    } catch (error) {
+      if (signal.aborted) throw error
+      if (error instanceof NoAudioTrackError) return fail(item, error.message)
+
+      // Most likely not enough memory. Uploading the whole video works like before, if the user agrees.
+      if (!item.serverId && original.size <= MAX_FILE_SIZE) {
+        item.status = 'confirm_full_upload'
+        item.progress = undefined
+        return null
+      }
+      return fail(item, CANNOT_PREPARE_MESSAGE)
+    }
+  }
+
+  function fail(item: UploadItem, reason: string): null {
+    item.status = 'failed'
+    item.error = reason
+    item.progress = undefined
+    forgetFiles(item.id)
+    return null
+  }
+
+  function forgetFiles(id: string) {
+    pendingFiles.delete(id)
+    preparedAudio.delete(id)
+    uploadWhole.delete(id)
+  }
+
   async function upload(item: UploadItem) {
-    const file = pendingFiles.get(item.id)
-    if (!file) return
+    const original = pendingFiles.get(item.id)
+    if (!original) return
 
     const controller = new AbortController()
     controllers.set(item.id, controller)
+
+    let file: File | null
+    try {
+      file = await fileToUpload(item, original, controller.signal)
+    } catch {
+      // Cancelled by the user while preparing: `remove` already took the row away
+      controllers.delete(item.id)
+      return
+    }
+    if (!file) {
+      controllers.delete(item.id)
+      return
+    }
+
     item.status = 'uploading'
     item.progress = 0
 
@@ -266,10 +366,11 @@ export const useUploadsStore = defineStore('uploads', () => {
             emailWhenReady: item.emailWhenReady ?? false,
             translateTo: item.translateTo,
             translationEngine: item.translationEngine,
+            displayName: file === original ? undefined : original.name,
             onStarted: (resource) => (item.serverId = resource.id),
           })
       applyResource(item, accepted)
-      pendingFiles.delete(item.id)
+      forgetFiles(item.id)
       startPolling()
     } catch (error) {
       // Cancelled by the user: `remove` already took the row away
@@ -281,7 +382,7 @@ export const useUploadsStore = defineStore('uploads', () => {
       } else {
         item.status = 'failed'
         item.error = errorMessage(error, 'Upload failed.')
-        pendingFiles.delete(item.id)
+        forgetFiles(item.id)
       }
     } finally {
       controllers.delete(item.id)
@@ -416,7 +517,7 @@ export const useUploadsStore = defineStore('uploads', () => {
       }
     }
 
-    pendingFiles.delete(id)
+    forgetFiles(id)
     items.value = items.value.filter((candidate) => candidate.id !== id)
   }
 
@@ -428,12 +529,14 @@ export const useUploadsStore = defineStore('uploads', () => {
     translationEngines,
     hasActiveUploads,
     nextReady,
+    nextFullUploadConfirmation,
     fetchRecent,
     fetchTranslationEngines,
     enqueue,
     addRejected,
     hasFileFor,
     resume,
+    confirmFullUpload,
     download,
     email,
     dismissEmailed,

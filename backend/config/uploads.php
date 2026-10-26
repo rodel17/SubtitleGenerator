@@ -35,9 +35,13 @@ return [
     |--------------------------------------------------------------------------
     | Accepted Media
     |--------------------------------------------------------------------------
+    |
+    | "mka" is what the browser sends for a video: it copies out only the
+    | audio track (frontend/src/lib/extractAudio.ts) and uploads that.
+    |
     */
 
-    'allowed_extensions' => ['mp4', 'mov', 'mkv', 'ts', 'mp3', 'wav', 'm4a'],
+    'allowed_extensions' => ['mp4', 'mov', 'mkv', 'ts', 'mp3', 'wav', 'm4a', 'mka'],
 
     /*
     |--------------------------------------------------------------------------

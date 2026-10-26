@@ -137,6 +137,7 @@ it('accepts each kind of media by its content', function (string $bytes, string 
 })->with([
     'wav audio' => [fn () => wavBytes(), 'clip.wav', 'audio/x-wav'],
     'mpeg transport stream' => [fn () => mpegTsBytes(), 'broadcast.ts', 'video/MP2T'],
+    "a video's audio track extracted in the browser" => [fn () => matroskaBytes(), 'clip.mka', 'video/x-matroska'],
 ]);
 
 it('stores the file under its id, whatever the original name contains', function () {

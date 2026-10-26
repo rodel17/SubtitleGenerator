@@ -24,14 +24,14 @@ class ChunkedUploadService
     /**
      * Start a chunked upload, owned by $user, for a file the client is about to send.
      *
-     * @param  array{name: string, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, translate_to?: string|null, translation_engine?: string|null, subtitle_format: string, email_when_ready?: bool}  $attributes
+     * @param  array{name: string, display_name?: string|null, size: int, mime_type?: string|null, last_modified?: int|null, language?: string|null, translate_to?: string|null, translation_engine?: string|null, subtitle_format: string, email_when_ready?: bool}  $attributes
      */
     public function start(User $user, array $attributes): Upload
     {
         $chunkSize = (int) config('uploads.chunk_size');
 
         return $user->uploads()->create([
-            'original_name' => $attributes['name'],
+            'original_name' => $attributes['display_name'] ?? $attributes['name'],
             'extension' => strtolower(pathinfo($attributes['name'], PATHINFO_EXTENSION)),
             'mime_type' => $attributes['mime_type'] ?? null,
             'last_modified' => $attributes['last_modified'] ?? null,
