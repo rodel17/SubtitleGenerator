@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs on the EC2 server, as the `ubuntu` user, after the code has been updated.
-# The deploy job in .github/workflows/ci.yml calls it through AWS Systems Manager;
+# Runs on the Oracle server, as the `ubuntu` user, after the code has been updated.
+# The deploy job in .github/workflows/ci.yml calls it over SSH through Docker/remote-deploy.sh;
 # you can also run it by hand: `cd ~/SubtitleGenerator && git pull && bash Docker/deploy.sh`.
 set -euo pipefail
 
@@ -27,7 +27,9 @@ for _ in $(seq 1 30); do
   if curl -fsS http://localhost:8000/api/test > /dev/null; then
     echo "API is up"
     docker image prune -f > /dev/null # drop the images replaced by this build, so the disk doesn't fill up
-    docker builder prune -f > /dev/null # and the build cache, which otherwise grows by every deploy (it had reached ~5 GB)
+    # and build cache older than a week, which otherwise grows by every deploy (it had reached ~5 GB);
+    # recent cache stays, so the other app on this server (audio4) keeps its fast rebuilds
+    docker builder prune -f --filter until=168h > /dev/null
     exit 0
   fi
   sleep 2
